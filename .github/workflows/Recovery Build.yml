@@ -119,17 +119,76 @@ jobs:
         repo sync -j$(nproc --all) --force-sync
       working-directory: workspace
 
-    - name: Clone device tree
+    - name: Clone and Build
       run: |
+        echo "=== 开始克隆设备树并构建 TWRP ==="
+        
+        # 1. 克隆设备树
+        echo "=== 克隆设备树 ==="
         git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
-      run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+        
+        # 2. 克隆公共树（如果有）
+        if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+            echo "=== 克隆公共树 ==="
+            git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+        fi
+        
+        # 3. 同步设备依赖
+        echo "=== 同步设备依赖 ==="
+        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" ]; then
+            echo "检测到 TWRP 依赖文件"
+            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies
+            repo sync -j$(nproc --all) || true
+        elif [ -f "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies" ]; then
+            echo "检测到 Omni 依赖文件"
+            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies
+            repo sync -j$(nproc --all) || true
+        else
+            echo "未找到依赖文件，跳过依赖同步"
+        fi
+        
+        # 4. 构建环境设置
+        echo "=== 设置构建环境 ==="
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        
+        # 5. 选择设备
+        echo "=== 选择设备: ${{ github.event.inputs.MAKEFILE_NAME }}-eng ==="
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        
+        # 6. 清理之前的构建
+        echo "=== 清理之前的构建 ==="
+        make clean
+        
+        # 7. 构建 vendor_boot
+        echo "=== 开始构建 vendor_boot ==="
+        mka vendorbootimage
+        
+        # 8. 检查构建输出
+        echo "=== 检查构建输出 ==="
+        OUTPUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+        if [ -d "$OUTPUT_DIR" ]; then
+            echo "📁 输出目录: $OUTPUT_DIR"
+            echo "📊 目录内容:"
+            ls -la "$OUTPUT_DIR/"
+            
+            echo "🔍 查找 .img 文件:"
+            find "$OUTPUT_DIR" -name "*.img" -type f | while read file; do
+                echo "  📄 $(basename "$file") - $(ls -lh "$file" | awk '{print $5}')"
+            done
+            
+            if [ -f "$OUTPUT_DIR/vendor_boot.img" ]; then
+                echo "✅ SUCCESS: vendor_boot.img 已生成！"
+                echo "文件大小: $(ls -lh "$OUTPUT_DIR/vendor_boot.img" | awk '{print $5}')"
+            else
+                echo "⚠️ WARNING: vendor_boot.img 未找到"
+                echo "尝试查找其他可能的文件:"
+                find "$OUTPUT_DIR" -type f \( -name "*.img" -o -name "*.zip" \) | head -10
+            fi
+        else
+            echo "❌ ERROR: 输出目录不存在: $OUTPUT_DIR"
+        fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Check Build Tree
@@ -140,26 +199,35 @@ jobs:
         if_true: twrp
         if_false: omni
 
-    - name: Sync Device Dependencies
-      run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
-        repo sync -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
-
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
 
-    - name: Building TWRP
+    - name: Check Build Output
       run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        make clean
-        make vendorbootimage -j$(nproc --all)
+        echo "=== 最终检查构建输出 ==="
+        OUTPUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+        if [ -d "$OUTPUT_DIR" ]; then
+            echo "📁 最终输出目录内容:"
+            ls -la "$OUTPUT_DIR/"
+            
+            # 检查 vendor_boot.img
+            if [ -f "$OUTPUT_DIR/vendor_boot.img" ]; then
+                echo "✅ vendor_boot.img 存在"
+                echo "文件信息:"
+                ls -lh "$OUTPUT_DIR/vendor_boot.img"
+            else
+                echo "❌ vendor_boot.img 不存在"
+                echo "所有 .img 文件:"
+                find "$OUTPUT_DIR" -name "*.img" -type f -exec ls -lh {} \;
+            fi
+        else
+            echo "❌ 输出目录不存在"
+        fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
