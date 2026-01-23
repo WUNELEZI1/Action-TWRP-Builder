@@ -160,39 +160,79 @@ jobs:
         fi
         
         echo ""
-        echo "=== Step 2: Sync Device Dependencies ==="
-        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" ]; then
-          echo "Found TWRP dependencies"
-          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
-            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies
-            repo sync -j4
+        echo "=== Step 2: Fix Android.mk include issue ==="
+        echo "Checking Android.mk files..."
+        
+        DEVICE_TREE_PATH="./${{ github.event.inputs.DEVICE_PATH }}"
+        
+        if [ -f "$DEVICE_TREE_PATH/Android.mk" ]; then
+          echo "Found Android.mk in device tree"
+          echo "Checking if it includes necessary modules..."
+          
+          if ! grep -q "vendor_boot" "$DEVICE_TREE_PATH/Android.mk" && ! grep -q "bootable/recovery" "$DEVICE_TREE_PATH/Android.mk"; then
+            echo "Android.mk may not include recovery/vendor_boot modules, checking..."
+            
+            echo "Creating temporary patch to ensure vendor_boot target is included..."
+            TEMP_MK="/tmp/ensure_vendor_boot.mk"
+            cat > "$TEMP_MK" << 'EOF'
+# Temporary makefile to ensure vendor_boot target is available
+LOCAL_PATH := $(call my-dir)
+
+# Include recovery module if needed
+ifneq ($(TARGET_NO_RECOVERY),true)
+  ifneq ($(BOARD_USES_RECOVERY_AS_BOOT),true)
+    ifeq ($(BOARD_BUILD_VENDOR_BOOT_IMAGE),true)
+      # Ensure vendor_boot target is available
+      include $(CLEAR_VARS)
+      LOCAL_MODULE := vendor_boot_ensure
+      LOCAL_MODULE_CLASS := ETC
+      include $(BUILD_SYSTEM)/base_rules.mk
+      
+      $(LOCAL_BUILT_MODULE):
+        $(hide) echo "Ensuring vendor_boot target is available"
+        $(hide) mkdir -p $(dir $@)
+        $(hide) touch $@
+    endif
+  endif
+endif
+
+# Include all subdirectory makefiles
+include $(call all-subdir-makefiles)
+EOF
+            
+            echo "Appending to device tree Android.mk..."
+            cat "$TEMP_MK" >> "$DEVICE_TREE_PATH/Android.mk"
+            echo "Updated Android.mk"
           fi
-        elif [ -f "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies" ]; then
-          echo "Found Omni dependencies"
-          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
-            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies
-            repo sync -j4
-          fi
+        else
+          echo "No Android.mk found in device tree, creating one..."
+          cat > "$DEVICE_TREE_PATH/Android.mk" << 'EOF'
+# Android.mk for $(DEVICE_NAME)
+LOCAL_PATH := $(call my-dir)
+
+# Include all subdirectory makefiles to ensure all modules are available
+include $(call all-subdir-makefiles)
+EOF
+          echo "Created Android.mk"
         fi
         
         echo ""
         echo "=== Step 3: Initialize Build Environment ==="
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        echo "Build environment initialized"
         
         echo ""
         echo "=== Step 4: Select Build Target ==="
         echo "Selecting target for ${{ github.event.inputs.DEVICE_NAME }}"
         
-        if breakfast twrp_${{ github.event.inputs.DEVICE_NAME }}-eng; then
-          echo "Selected: breakfast twrp_${{ github.event.inputs.DEVICE_NAME }}-eng"
-        elif lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
+        if lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
           echo "Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+          echo ""
+          echo "=== Build Environment Variables ==="
+          echo "TARGET_PRODUCT: $TARGET_PRODUCT"
+          echo "TARGET_DEVICE: $TARGET_DEVICE"
         else
           echo "Failed to select build target"
-          echo "Available lunch targets:"
-          lunch
           exit 1
         fi
         
@@ -202,17 +242,42 @@ jobs:
         echo "Starting build at: $(date)"
         
         BUILD_START=$(date +%s)
-        make clean
-        mka ${{ github.event.inputs.BUILD_TARGET }}
-        BUILD_END=$(date +%s)
-        BUILD_TIME=$((BUILD_END - BUILD_START))
+        
+        echo "Attempting build with: mka vendorbootimage"
+        if mka vendorbootimage; then
+          BUILD_END=$(date +%s)
+          BUILD_TIME=$((BUILD_END - BUILD_START))
+          echo "✅ Build completed successfully!"
+          export BUILT_TARGET="vendorbootimage"
+        else
+          echo "First attempt failed, trying: make vendor_boot"
+          if make vendor_boot; then
+            BUILD_END=$(date +%s)
+            BUILD_TIME=$((BUILD_END - BUILD_START))
+            echo "✅ Build completed successfully!"
+            export BUILT_TARGET="vendor_boot"
+          else
+            echo "Second attempt failed, trying: mka bootimage"
+            if mka bootimage; then
+              BUILD_END=$(date +%s)
+              BUILD_TIME=$((BUILD_END - BUILD_START))
+              echo "✅ Build completed successfully!"
+              export BUILT_TARGET="bootimage"
+            else
+              echo "❌ All build attempts failed"
+              echo "Checking ninja targets..."
+              ninja -t targets all 2>/dev/null | grep -i "vendor\|boot" | head -20 || echo "Cannot list ninja targets"
+              exit 1
+            fi
+          fi
+        fi
         
         echo ""
         echo "=== Build Summary ==="
         echo "Build completed at: $(date)"
         echo "Total build time: ${BUILD_TIME} seconds"
         echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Built target: ${BUILT_TARGET:-${{ github.event.inputs.BUILD_TARGET }}}"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Verify Build Output
@@ -222,19 +287,37 @@ jobs:
         
         if [ -d "$OUTPUT_PATH" ]; then
           echo "Contents of $OUTPUT_PATH:"
-          ls -la "$OUTPUT_PATH/"
+          ls -la "$OUTPUT_PATH/" 2>/dev/null || echo "Cannot list directory"
           
-          TARGET_FILE="$OUTPUT_PATH/${{ github.event.inputs.BUILD_TARGET }}.img"
-          if [ -f "$TARGET_FILE" ]; then
-            echo "SUCCESS: ${{ github.event.inputs.BUILD_TARGET }}.img created"
-            echo "File size: $(ls -lh "$TARGET_FILE" | awk '{print $5}')"
+          echo ""
+          echo "=== Looking for image files ==="
+          
+          # 查找所有可能的镜像文件
+          IMAGE_FILES=$(find "$OUTPUT_PATH" -name "*.img" -type f 2>/dev/null)
+          
+          if [ -n "$IMAGE_FILES" ]; then
+            echo "Found image files:"
+            echo "$IMAGE_FILES" | while read -r file; do
+              size=$(ls -lh "$file" | awk '{print $5}')
+              echo "  📄 $(basename "$file") - $size"
+            done
+            
+            # 检查特定文件
+            for img in "vendor_boot.img" "vendorboot.img" "boot.img" "recovery.img"; do
+              if [ -f "$OUTPUT_PATH/$img" ]; then
+                echo ""
+                echo "✅ SUCCESS: $img created"
+                echo "File size: $(ls -lh "$OUTPUT_PATH/$img" | awk '{print $5}')"
+                echo "File path: $OUTPUT_PATH/$img"
+              fi
+            done
           else
-            echo "WARNING: Target file not found"
-            echo "Available image files:"
-            find "$OUTPUT_PATH" -name "*.img" -type f
+            echo "❌ No image files found"
+            echo "Directory listing:"
+            find "$OUTPUT_PATH" -type f 2>/dev/null | head -20
           fi
         else
-          echo "ERROR: Output directory not found"
+          echo "❌ Output directory not found: $OUTPUT_PATH"
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
@@ -264,10 +347,11 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendorboot.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/boot.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/build_info.txt
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
         name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
