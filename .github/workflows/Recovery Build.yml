@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'Manifest URL (use SSH for private repos: git@github.com:...)'
+        description: 'Manifest URL'
         required: true
         default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
@@ -93,7 +93,7 @@ jobs:
         java-version: '11'
 
     - name: Setup SSH Keys
-      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@') || startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@') }}
+      if: startsWith(github.event.inputs.MANIFEST_URL, 'git@') || startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@')
       uses: webfactory/ssh-agent@v0.9.0
       with:
         ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -185,7 +185,7 @@ jobs:
         OUTPUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         mkdir -p "$OUTPUT_DIR"
         
-        cat > "$OUTPUT_DIR/release_notes.txt" << EOF
+        cat > "$OUTPUT_DIR/release_notes.txt" << 'EOF'
 TWRP Recovery Build for ${{ github.event.inputs.DEVICE_NAME }}
 ===========================================================
 
