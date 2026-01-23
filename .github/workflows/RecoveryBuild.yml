@@ -4,35 +4,41 @@ on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'TWRP manifest URL'
+        description: 'MANIFEST_URL (use git@github.com:XXXXX for SSH)'
         required: true
         default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
-        description: 'Manifest branch'
+        description: 'MANIFEST_BRANCH'
         required: true
         default: 'twrp-12.1'
       DEVICE_TREE_URL:
-        description: 'Device tree repository URL'
+        description: 'DEVICE_TREE_URL'
         required: true
         default: 'https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi'
       DEVICE_TREE_BRANCH:
-        description: 'Device tree branch'
+        description: 'DEVICE_TREE_BRANCH'
         required: true
         default: 'main'
       DEVICE_PATH:
-        description: 'Device tree local path'
+        description: 'DEVICE_PATH'
         required: true
         default: 'device/zyb/tb8786p1_64_k510_wifi'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        required: false
+      COMMON_PATH:
+        description: 'COMMON_PATH (if no common tree, leave blank)'
+        required: false
       DEVICE_NAME:
-        description: 'Device codename'
+        description: 'DEVICE_NAME'
         required: true
         default: 'tb8786p1_64_k510_wifi'
       MAKEFILE_NAME:
-        description: 'Makefile product name'
+        description: 'MAKEFILE_NAME'
         required: true
         default: 'omni_tb8786p1_64_k510_wifi'
       BUILD_TARGET:
-        description: 'Build target (vendor_boot/recovery)'
+        description: 'BUILD_TARGET'
         required: true
         default: 'vendor_boot'
 
@@ -43,76 +49,85 @@ jobs:
     permissions:
       contents: write
     steps:
-    - name: Display Project Information
-      run: |
-        echo "=== TWRP Recovery Builder ==="
-        echo "Repository: ${{ github.repository }}"
-        echo "Workflow: ${{ github.workflow }}"
-        echo "Run ID: ${{ github.run_id }}"
-        echo "Run Number: ${{ github.run_number }}"
-        echo "Ref: ${{ github.ref }}"
-        
-    - name: Display Build Parameters
+    - name: Display Run Parameters
       run: |
         echo "::group::Build Configuration"
-        echo "Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
         echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
-        echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}"
         echo "::endgroup::"
 
-    - name: Checkout Repository
+    - name: Check Out
       uses: actions/checkout@v4
 
-    - name: Setup Build Dependencies
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+
+    - name: Setup Disk Space
+      run: |
+        sudo fallocate -l 12G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        echo "/swapfile swap swap defaults 0 0" | sudo tee -a /etc/fstab
+        sudo apt clean
+        sudo rm -rf /var/lib/apt/lists/*
+
+    - name: Prepare the environment
       run: |
         sudo apt update
-        sudo apt install -y software-properties-common
-        sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
-        sudo apt update
-        sudo apt install -y \
-            git-core gnupg flex bison build-essential zip curl zlib1g-dev \
-            gcc-multilib g++-multilib libc6-dev-i386 libncurses5-dev lib32ncurses-dev \
-            x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc unzip fontconfig python3 python3-pip \
-            repo rsync squashfs-tools bc ccache lzop \
-            libbz2-dev liblz4-tool libsdl1.2-dev \
-            libgtk-3-dev libglu1-mesa-dev libssl-dev \
-            libreadline-dev lib32readline-dev
+        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            linux-modules-extra-$(uname -r) \
+            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+            build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
 
-    - name: Setup Java
+    - name: Install OpenJDK
       uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: '11'
 
-    - name: Setup SSH for Git
-      if: startsWith(github.event.inputs.MANIFEST_URL, 'git@') || startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@')
+    - name: Setup SSH Keys
+      if: startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com')
       uses: webfactory/ssh-agent@v0.9.0
       with:
         ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-    - name: Install Repo
+    - name: Install repo
       run: |
         mkdir ~/bin
         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
 
-    - name: Initialize Workspace
+    - name: Initialize repo
       run: |
         mkdir workspace
         cd workspace
-        echo "workspace_dir=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        repo init -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
-      id: init_workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "Nico170420"
+        git config --global user.email "b170420nc@gmail.com"
+        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+      id: pwd
 
-    - name: Sync Source Code
+    - name: Repo Sync
       run: |
-        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
-      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+        echo "Checking disk space before sync:"
+        df -h
+        repo sync -j4 --force-sync --no-clone-bundle --optimized-fetch
+        echo "Checking disk space after sync:"
+        df -h
+      working-directory: workspace
 
     - name: Clone and Build
       run: |
@@ -127,27 +142,47 @@ jobs:
         echo "Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
         echo "Path: ${{ github.event.inputs.DEVICE_PATH }}"
         
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} \
-          -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
-          ${{ github.event.inputs.DEVICE_PATH }}
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
         
         if [ $? -eq 0 ]; then
           echo "Device tree cloned successfully"
           echo "Device tree contents:"
-          ls -la ${{ github.event.inputs.DEVICE_PATH }}/
+          ls -la ./${{ github.event.inputs.DEVICE_PATH }}/
         else
           echo "Failed to clone device tree"
           exit 1
         fi
         
+        if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+          echo ""
+          echo "=== Clone Common Tree ==="
+          git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+        fi
+        
         echo ""
-        echo "=== Step 2: Initialize Build Environment ==="
+        echo "=== Step 2: Sync Device Dependencies ==="
+        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" ]; then
+          echo "Found TWRP dependencies"
+          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
+            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies
+            repo sync -j4
+          fi
+        elif [ -f "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies" ]; then
+          echo "Found Omni dependencies"
+          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
+            bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies
+            repo sync -j4
+          fi
+        fi
+        
+        echo ""
+        echo "=== Step 3: Initialize Build Environment ==="
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         echo "Build environment initialized"
         
         echo ""
-        echo "=== Step 3: Select Build Target ==="
+        echo "=== Step 4: Select Build Target ==="
         echo "Selecting target for ${{ github.event.inputs.DEVICE_NAME }}"
         
         if breakfast twrp_${{ github.event.inputs.DEVICE_NAME }}-eng; then
@@ -162,11 +197,12 @@ jobs:
         fi
         
         echo ""
-        echo "=== Step 4: Build Recovery Image ==="
+        echo "=== Step 5: Build Recovery Image ==="
         echo "Building: ${{ github.event.inputs.BUILD_TARGET }}.img"
         echo "Starting build at: $(date)"
         
         BUILD_START=$(date +%s)
+        make clean
         mka ${{ github.event.inputs.BUILD_TARGET }}
         BUILD_END=$(date +%s)
         BUILD_TIME=$((BUILD_END - BUILD_START))
@@ -177,7 +213,7 @@ jobs:
         echo "Total build time: ${BUILD_TIME} seconds"
         echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
-      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Verify Build Output
       run: |
@@ -200,7 +236,7 @@ jobs:
         else
           echo "ERROR: Output directory not found"
         fi
-      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Prepare Release Files
       run: |
@@ -222,23 +258,26 @@ jobs:
           echo "Build info saved to $BUILD_INFO_FILE"
           echo "Release files ready"
         fi
-      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Upload Build Artifacts
+    - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          ${{ steps.init_workspace.outputs.workspace_dir }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          ${{ steps.init_workspace.outputs.workspace_dir }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/build_info.txt
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
-        tag_name: build-${{ github.run_number }}
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/build_info.txt
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
         body: |
-          TWRP Recovery Build
+          TWRP Recovery Build for ${{ github.event.inputs.DEVICE_NAME }}
           
+          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
           Device: ${{ github.event.inputs.DEVICE_NAME }}
           Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-          Build: ${{ github.run_id }}
+          Build ID: ${{ github.run_id }}
           
-          Source: ${{ github.event.inputs.DEVICE_TREE_URL }}
+          Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
