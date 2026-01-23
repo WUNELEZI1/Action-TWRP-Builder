@@ -1,0 +1,237 @@
+name: TWRP Recovery Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_URL:
+        description: 'TWRP manifest URL'
+        required: true
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
+      MANIFEST_BRANCH:
+        description: 'Manifest branch'
+        required: true
+        default: 'twrp-12.1'
+      DEVICE_TREE_URL:
+        description: 'Device tree repository URL'
+        required: true
+        default: 'https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi'
+      DEVICE_TREE_BRANCH:
+        description: 'Device tree branch'
+        required: true
+        default: 'main'
+      DEVICE_PATH:
+        description: 'Device tree local path'
+        required: true
+        default: 'device/zyb/tb8786p1_64_k510_wifi'
+      DEVICE_NAME:
+        description: 'Device codename'
+        required: true
+        default: 'tb8786p1_64_k510_wifi'
+      MAKEFILE_NAME:
+        description: 'Makefile product name'
+        required: true
+        default: 'omni_tb8786p1_64_k510_wifi'
+      BUILD_TARGET:
+        description: 'Build target (vendor_boot/recovery)'
+        required: true
+        default: 'vendor_boot'
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - name: Display Project Information
+      run: |
+        echo "=== TWRP Recovery Builder ==="
+        echo "Repository: ${{ github.repository }}"
+        echo "Workflow: ${{ github.workflow }}"
+        echo "Run ID: ${{ github.run_id }}"
+        echo "Run Number: ${{ github.run_number }}"
+        echo "Ref: ${{ github.ref }}"
+        
+    - name: Display Build Parameters
+      run: |
+        echo "::group::Build Configuration"
+        echo "Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "::endgroup::"
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Build Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+            git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+            gcc-multilib g++-multilib libc6-dev-i386 libncurses5 lib32ncurses5-dev \
+            x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc unzip fontconfig python3 python3-pip \
+            repo rsync squashfs-tools bc ccache lzop
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '11'
+
+    - name: Setup SSH for Git
+      if: startsWith(github.event.inputs.MANIFEST_URL, 'git@') || startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@')
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+    - name: Install Repo
+      run: |
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+        chmod +x ~/repo
+        sudo mv ~/repo /usr/local/bin/
+
+    - name: Initialize Workspace
+      run: |
+        mkdir -p workspace
+        cd workspace
+        echo "workspace_dir=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        repo init -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
+      id: init_workspace
+
+    - name: Sync Source Code
+      run: |
+        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+
+    - name: Clone and Build
+      run: |
+        echo "=== TWRP Recovery Builder ==="
+        echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "======================================"
+        
+        echo ""
+        echo "=== Step 1: Clone Device Tree ==="
+        echo "Cloning from: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} \
+          -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
+          ${{ github.event.inputs.DEVICE_PATH }}
+        
+        if [ $? -eq 0 ]; then
+          echo "✅ Device tree cloned successfully"
+          echo "Device tree contents:"
+          ls -la ${{ github.event.inputs.DEVICE_PATH }}/
+        else
+          echo "❌ Failed to clone device tree"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== Step 2: Initialize Build Environment ==="
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        echo "Build environment initialized"
+        
+        echo ""
+        echo "=== Step 3: Select Build Target ==="
+        echo "Selecting target for ${{ github.event.inputs.DEVICE_NAME }}"
+        
+        if breakfast twrp_${{ github.event.inputs.DEVICE_NAME }}-eng; then
+          echo "✅ Selected: breakfast twrp_${{ github.event.inputs.DEVICE_NAME }}-eng"
+        elif lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
+          echo "✅ Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+        else
+          echo "❌ Failed to select build target"
+          echo "Available lunch targets:"
+          lunch
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== Step 4: Build Recovery Image ==="
+        echo "Building: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Starting build at: $(date)"
+        
+        BUILD_START=$(date +%s)
+        mka ${{ github.event.inputs.BUILD_TARGET }}
+        BUILD_END=$(date +%s)
+        BUILD_TIME=$((BUILD_END - BUILD_START))
+        
+        echo ""
+        echo "=== Build Summary ==="
+        echo "Build completed at: $(date)"
+        echo "Total build time: ${BUILD_TIME} seconds"
+        echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+
+    - name: Verify Build Output
+      run: |
+        OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Checking build output in $OUTPUT_PATH"
+        
+        if [ -d "$OUTPUT_PATH" ]; then
+          echo "Contents of $OUTPUT_PATH:"
+          ls -la "$OUTPUT_PATH/"
+          
+          TARGET_FILE="$OUTPUT_PATH/${{ github.event.inputs.BUILD_TARGET }}.img"
+          if [ -f "$TARGET_FILE" ]; then
+            echo "✅ SUCCESS: ${{ github.event.inputs.BUILD_TARGET }}.img created"
+            echo "File size: $(ls -lh "$TARGET_FILE" | awk '{print $5}')"
+          else
+            echo "⚠️ WARNING: Target file not found"
+            echo "Available image files:"
+            find "$OUTPUT_PATH" -name "*.img" -type f
+          fi
+        else
+          echo "❌ ERROR: Output directory not found"
+        fi
+      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+
+    - name: Prepare Release Files
+      run: |
+        OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+        if [ -d "$OUTPUT_PATH" ]; then
+          echo "Preparing release files..."
+          
+          BUILD_INFO_FILE="$OUTPUT_PATH/build_info.txt"
+          echo "TWRP Recovery Build" > "$BUILD_INFO_FILE"
+          echo "===================" >> "$BUILD_INFO_FILE"
+          echo "Device: ${{ github.event.inputs.DEVICE_NAME }}" >> "$BUILD_INFO_FILE"
+          echo "Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}" >> "$BUILD_INFO_FILE"
+          echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img" >> "$BUILD_INFO_FILE"
+          echo "Build ID: ${{ github.run_id }}" >> "$BUILD_INFO_FILE"
+          echo "Date: $(date)" >> "$BUILD_INFO_FILE"
+          echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}" >> "$BUILD_INFO_FILE"
+          
+          echo "Build info saved to $BUILD_INFO_FILE"
+          echo "Release files ready"
+        fi
+      working-directory: ${{ steps.init_workspace.outputs.workspace_dir }}
+
+    - name: Upload Build Artifacts
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          ${{ steps.init_workspace.outputs.workspace_dir }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          ${{ steps.init_workspace.outputs.workspace_dir }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/build_info.txt
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+        tag_name: build-${{ github.run_number }}
+        body: |
+          TWRP Recovery Build
+          
+          Device: ${{ github.event.inputs.DEVICE_NAME }}
+          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          Build: ${{ github.run_id }}
+          
+          Source: ${{ github.event.inputs.DEVICE_TREE_URL }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
