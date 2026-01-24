@@ -130,6 +130,7 @@ jobs:
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Clone and Build
+        id: build_step
         run: |
           echo "=== TWRP Recovery Builder ==="
           echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
@@ -141,6 +142,7 @@ jobs:
           git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} "$DEVICE_PATH" 
           if [ $? -ne 0 ]; then
             echo "❌ Failed to clone device tree"
+            echo "::set-output name=build_success::false"
             exit 1
           fi
           echo "✅ Device tree cloned successfully" 
@@ -251,6 +253,9 @@ jobs:
           echo "📦 Build strategy: Full build (make -j4)"
           echo "Build command: make -j4 2>&1 | tee build.log"
         
+          BUILD_RESULT="failure"
+          BUILD_TARGET="none"
+        
           if make -j4 2>&1 | tee build.log; then
             BUILD_RESULT="success"
             BUILD_TARGET="full_build"
@@ -275,14 +280,12 @@ jobs:
                 BUILD_TARGET="bootimage"
                 echo "✅ bootimage build succeeded"
               else
-                BUILD_RESULT="failure"
                 echo "❌ All build attempts failed"
                 
                 echo ""
                 echo "=== Detailed error analysis ==="
                 echo "Last errors:"
                 tail -50 build.log
-                exit 1
               fi
             fi
           fi
@@ -330,17 +333,19 @@ jobs:
             echo "   Build time: ${BUILD_TIME} seconds"
             echo "   Output directory: $OUTPUT_DIR"
             
-            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
-            echo "BUILD_TARGET=$BUILD_TARGET" >> $GITHUB_ENV
+            # 使用 step output 替代 env，解决上下文问题
+            echo "::set-output name=build_success::true"
+            echo "::set-output name=build_target::$BUILD_TARGET"
           else
             echo "❌ Build failed"
             echo "   Check build.log for detailed information"
-            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            echo "::set-output name=build_success::false"
+            echo "::set-output name=build_target::none"
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Verify Build Output
-        if: env.BUILD_SUCCESS == 'true'
+        if: steps.build_step.outputs.build_success == 'true'
         run: |
           OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
           echo "Checking build output: $OUTPUT_PATH"
@@ -370,39 +375,33 @@ jobs:
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Prepare Release Files
-        if: env.BUILD_SUCCESS == 'true'
+        if: steps.build_step.outputs.build_success == 'true'
         run: |
           OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-          
           if [ -d "$OUTPUT_PATH" ]; then
             echo "Preparing release files..."
-            
             BUILD_INFO_FILE="$OUTPUT_PATH/build_info.txt"
-            cat > "$BUILD_INFO_FILE" << EOF
-TWRP Recovery Build
-===================
-Device: ${{ github.event.inputs.DEVICE_NAME }}
-Product: ${{ env.BUILD_TARGET }}
-Build ID: ${{ github.run_id }}
-Date: $(date)
-Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
-Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
-Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-
-Generated files:
-EOF
-            
+            echo "TWRP Recovery Build" > "$BUILD_INFO_FILE"
+            echo "===================" >> "$BUILD_INFO_FILE"
+            echo "Device: ${{ github.event.inputs.DEVICE_NAME }}" >> "$BUILD_INFO_FILE"
+            echo "Product: ${{ steps.build_step.outputs.build_target }}" >> "$BUILD_INFO_FILE"
+            echo "Build ID: ${{ github.run_id }}" >> "$BUILD_INFO_FILE"
+            echo "Date: $(date)" >> "$BUILD_INFO_FILE"
+            echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}" >> "$BUILD_INFO_FILE"
+            echo "Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}" >> "$BUILD_INFO_FILE"
+            echo "Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}" >> "$BUILD_INFO_FILE"
+            echo "" >> "$BUILD_INFO_FILE"
+            echo "Generated files:" >> "$BUILD_INFO_FILE"
             find "$OUTPUT_PATH" -name "*.img" -type f 2>/dev/null | while read img; do
               size=$(ls -lh "$img" | awk '{print $5}')
               echo "- $(basename "$img") ($size)" >> "$BUILD_INFO_FILE"
             done
-            
             echo "Build info saved to: $BUILD_INFO_FILE"
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Upload to Release
-        if: env.BUILD_SUCCESS == 'true'
+        if: steps.build_step.outputs.build_success == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -415,7 +414,7 @@ EOF
             
             📱 Device: ${{ github.event.inputs.DEVICE_NAME }}
             🎯 Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-            🔧 Build: ${{ env.BUILD_TARGET }}
+            🔧 Build: ${{ steps.build_step.outputs.build_target }}
             📅 Date: $(date -u +"%Y-%m-%d %H:%M UTC")
             
             🔗 Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
