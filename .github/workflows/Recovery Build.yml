@@ -36,8 +36,7 @@ jobs:
           repo sync -j$(nproc) --no-clone-bundle --optimized-fetch
           
           # 克隆你的设备树（替换为实际仓库地址）
-          git clone https://github.com/你的仓库/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          
+          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           # ========== 唯一核心修复：解决export废弃语法 ==========
           # 1. 删除vendor/twrp/config/common.mk中废弃的export行
           sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' vendor/twrp/config/common.mk
