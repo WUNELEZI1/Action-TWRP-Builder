@@ -28,10 +28,12 @@ jobs:
           # 仅清理无用包，不删除手动标记的ccache
           sudo apt clean
 
-      - name: 配置repo工具
+      - name: 配置repo工具（多源兜底，避免网络超时）
         run: |
           mkdir -p ~/bin
-          curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
+          # 优先用清华源，失败则用官方源
+          curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo || \
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           export PATH="$HOME/bin:$PATH"
 
@@ -50,15 +52,16 @@ jobs:
           # 克隆设备树（深度1，减少体积）
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
-          # 修复语法错误
-          sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' vendor/twrp/config/common.mk
-          sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' vendor/twrp/config/common.mk
-          sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' device/zyb/tb8786p1_64_k510_wifi/*.mk
+          # ========== 核心修复：全局替换所有.mk文件的PRODUCT_PROPERTY_OVERRIDES赋值方式 ==========
+          # 1. 删除所有export PRODUCT_PROPERTY_OVERRIDES语句（根源问题）
+          find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
+          # 2. 将所有"PRODUCT_PROPERTY_OVERRIDES :="替换为"PRODUCT_PROPERTY_OVERRIDES +="（只读变量只能追加）
+          find . -name "*.mk" -type f -exec sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' {} \;
           
           # 再次清理临时文件
           rm -rf .repo/.repo_cache ~/.repo/cache
 
-      - name: 编译TWRP镜像（低并发+小缓存）
+      - name: 编译TWRP镜像（更低并发+小缓存，适配内存限制）
         run: |
           cd $HOME/twrp
           
@@ -75,8 +78,8 @@ jobs:
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 低并发编译（减少内存/磁盘压力）
-          make -j4 vendor_bootimage bootimage 2>&1 | tee build.log
+          # 降低并发数到2，适配15.6GB内存（避免内存不足崩溃）
+          make -j2 vendor_bootimage bootimage 2>&1 | tee build.log
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
