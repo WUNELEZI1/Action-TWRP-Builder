@@ -18,12 +18,11 @@ jobs:
           echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
           source ~/.bashrc
 
-      - name: 同步源码（修复权限问题）
+      - name: 同步源码并修复编译配置
         run: |
           export PATH="$HOME/bin:$PATH"
           
-          # 修复核心问题：使用sudo创建目录并修改权限
-          # 方案1：使用用户目录而非系统目录（推荐，避免权限问题）
+          # 创建编译目录
           mkdir -p $HOME/twrp
           cd $HOME/twrp
           
@@ -31,17 +30,26 @@ jobs:
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
           repo sync -j$(nproc) --no-clone-bundle --optimized-fetch
           
-          # 克隆你的设备树（替换为你的实际仓库地址）
-          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
+          # 克隆设备树（替换为你的实际仓库地址）
+          git clone https://github.com/你的仓库/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
-          # 修复只读变量冲突（关键）
-          sed -i '1i\PRODUCT_PROPERTY_OVERRIDES :=\nexport PRODUCT_PROPERTY_OVERRIDES\n' vendor/twrp/config/common.mk
+          # ========== 关键修复：移除废弃的export关键字 ==========
+          # 修复vendor/twrp/config/common.mk
+          sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' vendor/twrp/config/common.mk
           sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' vendor/twrp/config/common.mk
+          
+          # 修复设备树中的PRODUCT_PROPERTY_OVERRIDES写法
           sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' device/zyb/tb8786p1_64_k510_wifi/*.mk
+          
+          # 确保设备配置文件命名规范
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk" ]; then
+              echo "设备配置文件存在"
+              # 添加设备到编译列表（解决lunch识别问题）
+              echo "add_lunch_combo omni_tb8786p1_64_k510_wifi-eng" >> device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk
+          fi
 
-      - name: 编译TWRP（vendor_boot + boot）
+      - name: 编译TWRP
         run: |
-          # 使用用户目录编译，避免权限问题
           cd $HOME/twrp
           
           # 配置编译环境
@@ -50,11 +58,15 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           ccache -M 20G
           
-          # 加载环境
+          # 加载环境并编译
           source build/envsetup.sh
-          lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 编译vendor_boot和boot（适配你的设备）
+          # 先列出可用设备确认名称
+          echo "===== 可用设备列表 ====="
+          lunch | grep tb8786p1 || true
+          
+          # 执行编译（使用正确的设备名称）
+          lunch omni_tb8786p1_64_k510_wifi-eng
           make -j$(nproc) vendor_bootimage bootimage 2>&1 | tee build.log
 
       - name: 上传编译产物
