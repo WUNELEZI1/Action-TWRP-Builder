@@ -5,20 +5,30 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 清理并安装依赖
+      - name: 深度清理磁盘空间（关键优化）
         run: |
-          # 清理冗余包释放空间
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          # 更新并安装编译必需依赖
-          sudo apt update && sudo apt install -y \
-            git ccache python3 openjdk-11-jdk \
+          # 清理超大冗余包（释放10GB+空间）
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/lib/jvm /usr/lib/python3/dist-packages /var/lib/apt/lists/*
+          # 清理docker镜像（释放5GB+空间）
+          sudo docker system prune -a -f
+          # 清理日志和缓存
+          sudo rm -rf /var/log/* /tmp/* ~/.cache/*
+          # 检查剩余空间
+          df -h
+
+      - name: 安装最小化依赖
+        run: |
+          # 仅安装编译必需的依赖，避免冗余
+          sudo apt update && sudo apt install -y --no-install-recommends \
+            git ccache python3 openjdk-11-jdk-headless \
             gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
             liblz4-tool imagemagick lzop
+          # 再次清理apt缓存
+          sudo apt clean && sudo apt autoremove -y
 
       - name: 配置repo工具
         run: |
           mkdir -p ~/bin
-          # 使用清华源加速repo下载
           curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           export PATH="$HOME/bin:$PATH"
@@ -27,40 +37,41 @@ jobs:
         run: |
           export PATH="$HOME/bin:$PATH"
           
-          # 创建编译目录（用户目录，无权限问题）
+          # 创建编译目录
           mkdir -p $HOME/twrp
           cd $HOME/twrp
           
-          # 初始化TWRP 12.1源码（深度1，加速同步）
+          # 极致精简源码同步（仅同步必需部分）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
-          repo sync -j$(nproc) --no-clone-bundle --optimized-fetch
+          repo sync -j2 --no-clone-bundle --optimized-fetch --no-tags
           
-          # 克隆你的设备树（替换为实际仓库地址）
-          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          # ========== 唯一核心修复：解决export废弃语法 ==========
-          # 1. 删除vendor/twrp/config/common.mk中废弃的export行
+          # 克隆设备树
+          git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
+          
+          # 修复语法错误
           sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' vendor/twrp/config/common.mk
-          # 2. 将覆盖赋值改为追加赋值，避免变量冲突
           sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' vendor/twrp/config/common.mk
-          # 3. 同步修复设备树中的同类写法（防止后续冲突）
           sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' device/zyb/tb8786p1_64_k510_wifi/*.mk
+          
+          # 再次清理临时文件
+          rm -rf .repo/.repo_cache ~/.repo/cache
 
-      - name: 编译TWRP镜像
+      - name: 编译TWRP镜像（低并发+小缓存）
         run: |
           cd $HOME/twrp
           
-          # 配置ccache加速编译
+          # 降低ccache缓存大小（从20G降到5G，节省空间）
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
           export ALLOW_MISSING_DEPENDENCIES=true
-          ccache -M 20G
+          ccache -M 5G
           
-          # 加载编译环境
+          # 加载环境
           source build/envsetup.sh
-          # 选择设备编译目标（你的命名完全正确）
           lunch omni_tb8786p1_64_k510_wifi-eng
-          # 编译vendor_boot和boot镜像
-          make -j$(nproc) vendor_bootimage bootimage 2>&1 | tee build.log
+          
+          # 关键：降低编译并发数（从nproc降到4，减少内存/磁盘压力）
+          make -j4 vendor_bootimage bootimage 2>&1 | tee build.log
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
