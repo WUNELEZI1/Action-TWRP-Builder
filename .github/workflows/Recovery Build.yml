@@ -69,6 +69,19 @@ jobs:
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/prebuilt device/zyb/tb8786p1_64_k510_wifi/dtb device/zyb/tb8786p1_64_k510_wifi/sepolicy/{public,private}
           touch device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
           
+          # 修复PRODUCT_PROPERTY_OVERRIDES只读变量问题
+          # 方法1：修改common.mk，将PRODUCT_PROPERTY_OVERRIDES改为追加模式
+          if [ -f "vendor/twrp/config/common.mk" ]; then
+            sudo sed -i 's/PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' vendor/twrp/config/common.mk
+            echo "已修复common.mk中的PRODUCT_PROPERTY_OVERRIDES变量赋值方式"
+          fi
+          
+          # 方法2：如果设备树有device.mk，也做相同修复
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/device.mk" ]; then
+            sudo sed -i 's/PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' device/zyb/tb8786p1_64_k510_wifi/device.mk
+            echo "已修复device.mk中的PRODUCT_PROPERTY_OVERRIDES变量赋值方式"
+          fi
+          
           # 提前创建ccache目录并设置权限（解决权限问题）
           sudo mkdir -p /mnt/ccache
           sudo chown -R $USER:$USER /mnt/ccache
@@ -95,8 +108,8 @@ jobs:
           # 限制ccache大小为20G，避免占满磁盘
           ccache -M 20G && ccache -z && ccache -s
           
-          # 优化JVM和构建参数
-          export ANDROID_JACK_VM_ARGS="-Xmx6g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
+          # 优化JVM和构建参数（进一步降低内存占用）
+          export ANDROID_JACK_VM_ARGS="-Xmx4g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
           export BUILD_USERNAME=github
           export BUILD_HOSTNAME=actions
           
@@ -104,8 +117,8 @@ jobs:
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 调整-j参数（根据16G内存优化，避免内存和磁盘耗尽）
-          make -j4 vendor_bootimage recoveryimage 2>&1 | tee build.log
+          # 进一步降低并行数，适配15.6GB内存
+          make -j2 vendor_bootimage recoveryimage 2>&1 | tee build.log
           
           # 显示构建结果
           ls -lh out/target/product/tb8786p1_64_k510_wifi/*.img || echo "构建产物未找到"
