@@ -69,6 +69,10 @@ jobs:
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/prebuilt device/zyb/tb8786p1_64_k510_wifi/dtb device/zyb/tb8786p1_64_k510_wifi/sepolicy/{public,private}
           touch device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
           
+          # 提前创建ccache目录并设置权限（解决权限问题）
+          sudo mkdir -p /mnt/ccache
+          sudo chown -R $USER:$USER /mnt/ccache
+          
           # 再次检查磁盘空间
           echo "=== 同步后磁盘状态 ==="
           df -h
@@ -82,14 +86,13 @@ jobs:
           # 进入构建目录
           cd /mnt/twrp-build
           
-          # 配置ccache缓存（放到/mnt分区）
+          # 配置ccache缓存（放到/mnt分区，已提前创建并授权）
           export ALLOW_MISSING_DEPENDENCIES=true 
           export USE_CCACHE=1 
           export CCACHE_DIR=/mnt/ccache
           export CCACHE_EXEC=/usr/bin/ccache
           
           # 限制ccache大小为20G，避免占满磁盘
-          mkdir -p $CCACHE_DIR
           ccache -M 20G && ccache -z && ccache -s
           
           # 优化JVM和构建参数
@@ -123,5 +126,6 @@ jobs:
           name: build-failure-logs
           path: |
             /mnt/twrp-build/build.log
-            /mnt/twrp-build/out/soong/*.log
+            /mnt/twrp-build/out/**/*.log
           retention-days: 7
+          if-no-files-found: warn  # 即使没找到文件也只警告，不报错
