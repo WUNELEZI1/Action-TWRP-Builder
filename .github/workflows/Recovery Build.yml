@@ -38,128 +38,81 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Emergency Disk Cleanup
+      - name: Quick Disk Clean
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/*
-          sudo rm -rf /home/runner/.cache/* /home/runner/.npm/* /home/runner/.gradle/*
-          sudo rm -rf /usr/local/share/miniconda /usr/local/share/chromium
-          sudo rm -rf /var/log/* /var/crash/*
-          sudo truncate -s 0 /var/log/syslog
+          sudo rm -rf /tmp/* /var/tmp/*
           df -h /
 
-      - name: Create Swap on /mnt
+      - name: Create Small Swap
         run: |
-          sudo fallocate -l 64G /mnt/swapfile
+          sudo fallocate -l 8G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          echo "/mnt/swapfile swap swap defaults 0 0" | sudo tee -a /etc/fstab
-          sudo sysctl -w vm.swappiness=10
           free -h
 
-      - name: Full System Purge
+      - name: Mount Build Dir
         run: |
-          sudo apt remove -y -qq --purge $(dpkg -l | grep '^ii' | grep -E 'linux-|gnome-|libreoffice-|firefox|thunderbird' | awk '{print $2}') 2>/dev/null
-          sudo apt autoremove -y -qq --purge 2>/dev/null
-          sudo apt clean -qq 2>/dev/null
-          sudo rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* 2>/dev/null
-          sudo rm -rf /opt/* /usr/local/lib/node_modules 2>/dev/null
-          df -h
-
-      - name: Mount Build Directory
-        run: |
-          sudo mkdir -p /mnt/build /mnt/cache /mnt/tmp
-          sudo chown -R runner:runner /mnt/build /mnt/cache /mnt/tmp
-          export TMPDIR=/mnt/tmp
-          export RUNNER_DIAGNOSTICS=/mnt/cache/diag
-          sudo mkdir -p $RUNNER_DIAGNOSTICS
-          sudo rm -rf /home/runner/actions-runner/cached/_diag
-          sudo ln -sf $RUNNER_DIAGNOSTICS /home/runner/actions-runner/cached/_diag
+          sudo mkdir -p /mnt/build
+          sudo chown runner:runner /mnt/build
           ln -sf /mnt/build $HOME/workspace
-          df -h
+          df -h /mnt
 
-      - name: Install Dependencies
+      - name: Install Deps
         run: |
           sudo apt update -y -qq
-          DEBIAN_FRONTEND=noninteractive sudo apt install -y -qq gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
+          DEBIAN_FRONTEND=noninteractive sudo apt install -y -qq gperf gcc-multilib g++-multilib libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '11'
-          cache: 'gradle'
 
-      - name: Install Repo Tool
+      - name: Install Repo
         run: |
           mkdir -p ~/bin
-          curl -fsSL --max-time 30 https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
+          curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           sudo ln -sf ~/bin/repo /usr/bin/repo
-          git config --global http.postBuffer 2147483648
-          git config --global core.compression 0
-          git config --global pack.threads 16
+          git config --global http.postBuffer 1073741824
 
-      - name: Initialize Repo
+      - name: Init Repo
         run: |
           cd /mnt/build
-          git config --global user.name "Builder"
-          git config --global user.email "builder@github.com"
-          repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --no-repo-verify --quiet
-          echo "workspace-folder=/mnt/build" >> $GITHUB_OUTPUT
-        id: pwd
+          git config --global user.name "B"
+          git config --global user.email "b@b.com"
+          repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --no-repo-verify
 
-      - name: Sync Source Code
+      - name: Sync Source
         run: |
           cd /mnt/build
-          repo sync -j64 --fail-fast --force-sync --no-clone-bundle --optimized-fetch --no-tags --current-branch --quiet
-          df -h /mnt
+          repo sync -j16 --force-sync --no-clone-bundle --quiet
 
       - name: Clone Device Tree
         run: |
           mkdir -p /mnt/build/${{ github.event.inputs.DEVICE_PATH }}
-          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} /mnt/build/${{ github.event.inputs.DEVICE_PATH }} --depth=1 --quiet
+          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} /mnt/build/${{ github.event.inputs.DEVICE_PATH }} --depth=1
 
-      - name: Fix Build Configuration
+      - name: Build
         run: |
           cd /mnt/build
-          sed -i 's/PRODUCT_PROPERTY_OVERRIDES +=/PRODUCT_SYSTEM_DEFAULT_PROPERTIES +=/g' vendor/twrp/config/common.mk
-          sed -i 's/PRODUCT_PROPERTY_OVERRIDES =/PRODUCT_SYSTEM_DEFAULT_PROPERTIES =/g' vendor/twrp/config/common.mk
-          [ -f "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk" ] && {
-            sed -i 's/BOARD_PLAT_PUBLIC_SEPOLICY_DIR/SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS/g' ${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk
-            sed -i 's/BOARD_PLAT_PRIVATE_SEPOLICY_DIR/SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS/g' ${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk
-          }
-
-      - name: Build TWRP
-        run: |
-          cd /mnt/build
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export USE_CCACHE=1
-          export CCACHE_EXEC=/usr/bin/ccache
-          export CCACHE_COMPRESS=1
-          export CCACHE_COMPRESSLEVEL=9
-          export ANDROID_BUILD_SANDBOXING=0
-          export TMPDIR=/mnt/tmp
-          export CCACHE_DIR=/mnt/cache/ccache
-          mkdir -p $TMPDIR $CCACHE_DIR
-          ccache -M 200G
-          ccache -z
-          ccache -o compression=true
+          export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1 ANDROID_BUILD_SANDBOXING=0
+          ccache -M 50G
           source build/envsetup.sh
-          lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng -q
-          make -j$(nproc --all) ${{ github.event.inputs.BUILD_TARGET }}image -k 2>/dev/null
+          lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+          make -j8 ${{ github.event.inputs.BUILD_TARGET }}image
 
-      - name: Upload Build Result
-        if: success()
+      - name: Upload
         uses: softprops/action-gh-release@v2
         with:
           files: /mnt/build/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
           name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
           tag_name: build-${{ github.run_number }}
-          body: "TWRP Build for ${{ github.event.inputs.DEVICE_NAME }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
