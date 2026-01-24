@@ -4,48 +4,124 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Env Setup
+      - name: 系统环境清理与初始化
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          # 深度清理系统无用文件，释放磁盘空间
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo rm -rf /usr/local/graalvm /usr/local/.ghcup /usr/local/boost
+          sudo apt clean
+          sudo apt autoclean
+          sudo apt autoremove -y --purge
+          
+          # 清理Docker镜像和缓存（如果存在）
+          if command -v docker &> /dev/null; then
+            sudo docker system prune -af
+          fi
+          
+          # 清理临时文件
+          sudo rm -rf /tmp/* /var/tmp/*
+          sudo find /var/log -type f -name "*.log" -delete
+          
+          # 更新并安装依赖
           sudo apt update -y && sudo apt install -y git ccache python3 openjdk-11-jdk gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop
+          
+          # 配置repo工具
           mkdir -p ~/bin
           curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
           source ~/.bashrc
+          
+          # 配置Java环境
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
           export PATH="$JAVA_HOME/bin:$PATH"
+          
+          # 调整系统限制
           ulimit -n 65535
+          
+          # 显示系统资源状态
+          echo "=== 内存状态 ==="
           free -h
+          echo "=== 磁盘状态 ==="
           df -h
+          echo "=== CPU核心数 ==="
+          nproc
 
-      - name: Source Sync
+      - name: 源码同步（优化存储路径）
         run: |
           export PATH="$HOME/bin:$PATH"
-          mkdir build && cd build
+          
+          # 使用/mnt分区（更大的磁盘空间）作为构建目录
+          sudo mkdir -p /mnt/twrp-build
+          sudo chown -R $USER:$USER /mnt/twrp-build
+          cd /mnt/twrp-build
+          
+          # 初始化repo（使用清华镜像加速）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
-          repo sync -j16 --no-clone-bundle --optimized-fetch --quiet
+          
+          # 优化同步参数，减少内存和磁盘占用
+          repo sync -j$(nproc --all) --no-clone-bundle --optimized-fetch --quiet --force-sync
+          
+          # 克隆设备树
           git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi -b main device/zyb/tb8786p1_64_k510_wifi --depth=1
+          
+          # 创建必要目录和文件
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/prebuilt device/zyb/tb8786p1_64_k510_wifi/dtb device/zyb/tb8786p1_64_k510_wifi/sepolicy/{public,private}
           touch device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
+          
+          # 再次检查磁盘空间
+          echo "=== 同步后磁盘状态 ==="
+          df -h
 
-      - name: Build TWRP
+      - name: 构建TWRP（优化构建参数）
         run: |
           export PATH="$HOME/bin:$PATH"
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
           export PATH="$JAVA_HOME/bin:$PATH"
-          cd build
-          export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1 CCACHE_EXEC=/usr/bin/ccache
-          export ANDROID_JACK_VM_ARGS="-Xmx8g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
-          ccache -M 50G && ccache -z
+          
+          # 进入构建目录
+          cd /mnt/twrp-build
+          
+          # 配置ccache缓存（放到/mnt分区）
+          export ALLOW_MISSING_DEPENDENCIES=true 
+          export USE_CCACHE=1 
+          export CCACHE_DIR=/mnt/ccache
+          export CCACHE_EXEC=/usr/bin/ccache
+          
+          # 限制ccache大小为20G，避免占满磁盘
+          mkdir -p $CCACHE_DIR
+          ccache -M 20G && ccache -z && ccache -s
+          
+          # 优化JVM和构建参数
+          export ANDROID_JACK_VM_ARGS="-Xmx6g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
+          export BUILD_USERNAME=github
+          export BUILD_HOSTNAME=actions
+          
+          # 加载构建环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
-          make -j8 vendor_bootimage recoveryimage 2>&1 | tee build.log
+          
+          # 调整-j参数（根据16G内存优化，避免内存和磁盘耗尽）
+          make -j4 vendor_bootimage recoveryimage 2>&1 | tee build.log
+          
+          # 显示构建结果
+          ls -lh out/target/product/tb8786p1_64_k510_wifi/*.img || echo "构建产物未找到"
 
-      - name: Upload Result
+      - name: 上传构建结果
         uses: actions/upload-artifact@v4
         with:
           name: twrp-img
           path: |
-            build/out/target/product/tb8786p1_64_k510_wifi/*.img
-            build/build.log
+            /mnt/twrp-build/out/target/product/tb8786p1_64_k510_wifi/*.img
+            /mnt/twrp-build/build.log
+          retention-days: 7  # 设置产物保留7天
+          
+      - name: 构建失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-logs
+          path: |
+            /mnt/twrp-build/build.log
+            /mnt/twrp-build/out/soong/*.log
+          retention-days: 7
