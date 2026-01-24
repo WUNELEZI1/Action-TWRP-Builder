@@ -32,7 +32,7 @@ jobs:
           repo sync -j$(nproc) --no-clone-bundle --optimized-fetch
           
           # 克隆你的设备树（替换为你的实际仓库地址）
-          git clone https://github.com/你的仓库/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
+          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
           # 修复只读变量冲突（关键）
           sed -i '1i\PRODUCT_PROPERTY_OVERRIDES :=\nexport PRODUCT_PROPERTY_OVERRIDES\n' vendor/twrp/config/common.mk
