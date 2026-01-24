@@ -133,151 +133,136 @@ jobs:
         run: |
           echo "=== TWRP Recovery Builder ==="
           echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
           echo "======================================"
-          
+        
           echo ""
           echo "=== Step 1: Clone Device Tree ==="
-          echo "Cloning from: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-          echo "Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-          echo "Path: ${{ github.event.inputs.DEVICE_PATH }}"
-          
-          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-          
-          if [ $? -eq 0 ]; then
-            echo "Device tree cloned successfully"
-            echo "Device tree contents:"
-            ls -la ./${{ github.event.inputs.DEVICE_PATH }}/
-          else
-            echo "Failed to clone device tree"
+          DEVICE_PATH="./${{ github.event.inputs.DEVICE_PATH }}"
+          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} "$DEVICE_PATH" 
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to clone device tree"
             exit 1
           fi
-          
-          if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
-            echo ""
-            echo "=== Clone Common Tree ==="
-            git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-          fi
-          
+          echo "✅ Device tree cloned successfully" 
           echo ""
-          echo "=== Step 2: Fix Android.mk include issue ==="
-          echo "Checking Android.mk files..."
-          
-          DEVICE_TREE_PATH="./${{ github.event.inputs.DEVICE_PATH }}"
-          
-          if [ -f "$DEVICE_TREE_PATH/Android.mk" ]; then
-            echo "Found Android.mk in device tree"
-            echo "Checking if it includes necessary modules..."
-            
-            if ! grep -q "vendor_boot" "$DEVICE_TREE_PATH/Android.mk" && ! grep -q "bootable/recovery" "$DEVICE_TREE_PATH/Android.mk"; then
-              echo "Android.mk may not include recovery/vendor_boot modules, checking..."
-              
-              echo "Creating temporary patch to ensure vendor_boot target is included..."
-              TEMP_MK="/tmp/ensure_vendor_boot.mk"
-              cat > "$TEMP_MK" << 'EOF'
-          # Temporary makefile to ensure vendor_boot target is available
-          LOCAL_PATH := $(call my-dir)
-          
-          # Include recovery module if needed
-          ifneq ($(TARGET_NO_RECOVERY),true)
-            ifneq ($(BOARD_USES_RECOVERY_AS_BOOT),true)
-              ifeq ($(BOARD_BUILD_VENDOR_BOOT_IMAGE),true)
-                # Ensure vendor_boot target is available
-                include $(CLEAR_VARS)
-                LOCAL_MODULE := vendor_boot_ensure
-                LOCAL_MODULE_CLASS := ETC
-                include $(BUILD_SYSTEM)/base_rules.mk
-                
-                $(LOCAL_BUILT_MODULE):
-                  $(hide) echo "Ensuring vendor_boot target is available"
-                  $(hide) mkdir -p $(dir $@)
-                  $(hide) touch $@
-              endif
-            endif
-          endif
-          
-          # Include all subdirectory makefiles
-          include $(call all-subdir-makefiles)
-          EOF
-              
-              echo "Appending to device tree Android.mk..."
-              cat "$TEMP_MK" >> "$DEVICE_TREE_PATH/Android.mk"
-              echo "Updated Android.mk"
+          echo "=== Step 2: 验证关键配置文件 ==="
+          for file in Android.mk BoardConfig.mk twrp.mk recovery.fstab; do
+            if [ -f "$DEVICE_PATH/$file" ]; then
+              echo "✅ Found: $file"
+            else
+              echo "⚠️  Missing: $file (可能影响构建)"
             fi
-          else
-            echo "No Android.mk found in device tree, creating one..."
-            cat > "$DEVICE_TREE_PATH/Android.mk" << 'EOF'
-          # Android.mk for $(DEVICE_NAME)
-          LOCAL_PATH := $(call my-dir)
-          
-          # Include all subdirectory makefiles to ensure all modules are available
-          include $(call all-subdir-makefiles)
-          EOF
-            echo "Created Android.mk"
-          fi
-          
+          done
+        
           echo ""
-          echo "=== Step 3: Initialize Build Environment ==="
+          echo "=== Step 3: 初始化构建环境 ==="
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
-          
+        
           echo ""
-          echo "=== Step 4: Select Build Target ==="
-          echo "Selecting target for ${{ github.event.inputs.DEVICE_NAME }}"
-          
-          if lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
-            echo "Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
-            echo ""
-            echo "=== Build Environment Variables ==="
-            echo "TARGET_PRODUCT: $TARGET_PRODUCT"
-            echo "TARGET_DEVICE: $TARGET_DEVICE"
-          else
-            echo "Failed to select build target"
+          echo "=== Step 4: 选择构建目标 ==="
+          if ! lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
+            echo "❌ Failed to select build target"
             exit 1
           fi
-          
+        
+          echo "Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+          echo "TARGET_PRODUCT: $TARGET_PRODUCT"
+          echo "TARGET_DEVICE: $TARGET_DEVICE"
+        
           echo ""
-          echo "=== Step 5: Build Recovery Image ==="
-          echo "Building: ${{ github.event.inputs.BUILD_TARGET }}.img"
-          echo "Starting build at: $(date)"
-          
-          BUILD_START=$(date +%s)
-          
-          echo "Attempting build with: mka vendorbootimage"
-          if mka vendorbootimage; then
-            BUILD_END=$(date +%s)
-            BUILD_TIME=$((BUILD_END - BUILD_START))
-            echo "✅ Build completed successfully!"
-            export BUILT_TARGET="vendorbootimage"
+          echo "=== Step 5: 关键调试 - 检查构建变量 ==="
+          echo "1. 检查 A/B 和 vendor_boot 相关变量:"
+          echo "   AB_OTA_UPDATER: $(get_build_var AB_OTA_UPDATOR 2>/dev/null || echo '未获取到')"
+          echo "   AB_OTA_PARTITIONS: $(get_build_var AB_OTA_PARTITIONS 2>/dev/null || echo '未获取到')"
+          echo "   BOARD_BUILD_VENDOR_BOOT_IMAGE: $(get_build_var BOARD_BUILD_VENDOR_BOOT_IMAGE 2>/dev/null || echo '未获取到')"
+          echo "   TARGET_NO_RECOVERY: $(get_build_var TARGET_NO_RECOVERY 2>/dev/null || echo '未获取到')"
+          echo "   BOARD_USES_RECOVERY_AS_BOOT: $(get_build_var BOARD_USES_RECOVERY_AS_BOOT 2>/dev/null || echo '未获取到')"
+        
+          echo ""
+          echo "2. 检查可用的 ninja 构建目标:"
+          ninja -t targets all 2>/dev/null | grep -E "(vendor_boot|recoveryimage|bootimage)" | head -10 || echo "   无法列出构建目标"
+        
+          echo ""
+          echo "=== Step 6: 执行构建 ==="
+          echo "开始构建: $(date)"
+          BUILD_START=$(date +%s)  
+          echo ""
+          echo "📦 方案A: 构建 'recoveryimage' (TWRP标准目标)..."
+          if mka -j4 recoveryimage 2>&1 | tee build.log; then
+            BUILD_RESULT="success"
+            BUILD_TARGET="recoveryimage"
           else
-            echo "First attempt failed, trying: make vendor_boot"
-            if make vendor_boot; then
-              BUILD_END=$(date +%s)
-              BUILD_TIME=$((BUILD_END - BUILD_START))
-              echo "✅ Build completed successfully!"
-              export BUILT_TARGET="vendor_boot"
+            echo "方案A失败，查看错误..."
+            grep -i "error\|fail\|no rule to make" build.log | head -10 || true
+            
+            # 方案B: 尝试直接构建 vendor_boot
+            echo ""
+            echo "📦 方案B: 构建 'vendor_boot'..."
+            if mka -j4 vendor_boot 2>&1 | tee -a build.log; then
+              BUILD_RESULT="success"
+              BUILD_TARGET="vendor_boot"
             else
-              echo "Second attempt failed, trying: mka bootimage"
-              if mka bootimage; then
-                BUILD_END=$(date +%s)
-                BUILD_TIME=$((BUILD_END - BUILD_START))
-                echo "✅ Build completed successfully!"
-                export BUILT_TARGET="bootimage"
+              # 方案C: 尝试完整构建
+              echo ""
+              echo "📦 方案C: 完整构建 (mka -j4)..."
+              if mka -j4 2>&1 | tee -a build.log; then
+                BUILD_RESULT="success"
+                BUILD_TARGET="full_build"
               else
-                echo "❌ All build attempts failed"
-                echo "Checking ninja targets..."
-                ninja -t targets all 2>/dev/null | grep -i "vendor\|boot" | head -20 || echo "Cannot list ninja targets"
+                echo "❌ 所有构建方案均失败"
+                
+                echo ""
+                echo "🔍 构建失败分析:"
+                echo "最后的错误信息:"
+                tail -50 build.log | grep -A5 -B5 -i "error\|fail"
+                
+                echo ""
+                echo "检查输出目录是否存在:"
+                ls -la out/target/product/*/ 2>/dev/null | head -20 || echo "输出目录不存在"
+                
                 exit 1
               fi
             fi
           fi
-          
+        
+          BUILD_END=$(date +%s)
+          BUILD_TIME=$((BUILD_END - BUILD_START))
+        
           echo ""
-          echo "=== Build Summary ==="
-          echo "Build completed at: $(date)"
-          echo "Total build time: ${BUILD_TIME} seconds"
-          echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Built target: ${BUILT_TARGET:-${{ github.event.inputs.BUILD_TARGET }}}"
+          echo "=== Step 7: 检查构建输出 ==="
+          OUTPUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+          if [ -d "$OUTPUT_DIR" ]; then
+            echo "✅ 找到输出目录: $OUTPUT_DIR"
+            echo ""
+            echo "生成的镜像文件:"
+            find "$OUTPUT_DIR" -name "*.img" -type f 2>/dev/null | while read img; do
+              img_size=$(stat -c%s "$img" 2>/dev/null || echo "未知")
+              echo "  - $(basename "$img") ($((img_size/1024/1024))MB)"
+            done || echo "  未找到镜像文件"
+            
+            echo ""
+            echo "目录结构:"
+            ls -la "$OUTPUT_DIR/" | head -20
+          else
+            echo "⚠️  输出目录不存在: $OUTPUT_DIR"
+            echo "当前工作目录: $(pwd)"
+            echo "out目录结构:"
+            find out -type d -maxdepth 3 2>/dev/null | head -20 || true
+          fi
+        
+          echo ""
+          echo "=== 构建总结 ==="
+          if [ "$BUILD_RESULT" = "success" ]; then
+            echo "✅ 构建成功!"
+            echo "   构建目标: $BUILD_TARGET"
+            echo "   构建时间: ${BUILD_TIME}秒"
+            echo "   输出目录: $OUTPUT_DIR"
+          else
+            echo "❌ 构建失败"
+            echo "   最后尝试的目标: $BUILD_TARGET"
+          fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Verify Build Output
