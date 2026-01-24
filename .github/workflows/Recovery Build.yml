@@ -15,7 +15,6 @@ jobs:
           source ~/.bashrc
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
           export PATH="$JAVA_HOME/bin:$PATH"
-          # 性能优化：增大文件描述符限制
           ulimit -n 65535
           free -h
           df -h
@@ -24,17 +23,11 @@ jobs:
         run: |
           export PATH="$HOME/bin:$PATH"
           mkdir build && cd build
-          # 同步TWRP源码（性能优化：j8线程+深度1）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
-          repo sync -j8 --no-clone-bundle --optimized-fetch --quiet
-          # 克隆设备树（保留手动修改能力）
+          repo sync -j16 --no-clone-bundle --optimized-fetch --quiet
           git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi -b main device/zyb/tb8786p1_64_k510_wifi --depth=1
-          # 预创建缺失目录（避免编译报错）
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/prebuilt device/zyb/tb8786p1_64_k510_wifi/dtb device/zyb/tb8786p1_64_k510_wifi/sepolicy/{public,private}
           touch device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
-          # 修复BoardConfig.mk关键错误（仅修复必改项，保留手动修改能力）
-          sed -i '/SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS/c\SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS := $(DEVICE_PATH)/sepolicy/public' device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk
-          sed -i '/SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS/c\SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS := $(DEVICE_PATH)/sepolicy/private' device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk
 
       - name: Build TWRP
         run: |
@@ -42,15 +35,12 @@ jobs:
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
           export PATH="$JAVA_HOME/bin:$PATH"
           cd build
-          # 性能优化：CCACHE 50G + 多线程编译（适配16G内存）
           export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1 CCACHE_EXEC=/usr/bin/ccache
           export ANDROID_JACK_VM_ARGS="-Xmx8g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
           ccache -M 50G && ccache -z
-          # 加载编译环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
-          # 性能优化：j4编译（平衡速度与内存）
-          make -j4 vendor_bootimage recoveryimage -l 2.0 2>&1 | tee build.log
+          make -j8 vendor_bootimage recoveryimage 2>&1 | tee build.log
 
       - name: Upload Result
         uses: actions/upload-artifact@v4
