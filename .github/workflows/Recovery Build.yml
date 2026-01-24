@@ -109,10 +109,11 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Install repo
+      - name: Install repo (固定旧版本，避免参数兼容问题)
         run: |
           mkdir ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          # 下载固定旧版本repo，避免新版参数不兼容
+          curl https://storage.googleapis.com/git-repo-downloads/repo-1.28 > ~/bin/repo
           chmod a+x ~/bin/repo
           sudo ln -sf ~/bin/repo /usr/bin/repo
           git config --global http.postBuffer 1048576000
@@ -134,11 +135,12 @@ jobs:
           repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --no-repo-verify
         id: pwd
 
-      - name: Repo Sync
+      - name: Repo Sync (移除废弃参数 --skip-broken)
         run: |
           df -h
           for i in {1..3}; do
-            repo sync -j$(nproc) --fail-fast --skip-broken --force-sync --no-clone-bundle --optimized-fetch --no-tags --current-branch
+            # 核心修复：删除 --skip-broken 参数，适配新版repo
+            repo sync -j$(nproc) --fail-fast --force-sync --no-clone-bundle --optimized-fetch --no-tags --current-branch
             if [ $? -eq 0 ]; then
               break
             fi
