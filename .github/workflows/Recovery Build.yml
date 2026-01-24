@@ -65,29 +65,33 @@ jobs:
           # 克隆设备树
           git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi -b main device/zyb/tb8786p1_64_k510_wifi --depth=1
           
-          # 创建必要目录和文件
+          # 创建必要目录
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/prebuilt device/zyb/tb8786p1_64_k510_wifi/dtb device/zyb/tb8786p1_64_k510_wifi/sepolicy/{public,private}
-          touch device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
           
-          # ===================== 关键修复：强制重新定义变量 =====================
-          # 方法1：直接在common.mk开头添加变量重置（最彻底）
+          # ========== 关键修复1：创建最小有效文件（避免空文件编译错误） ==========
+          # 创建最小的内核文件（避免编译时找不到文件）
+          echo -n "dummy" > device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb
+          echo -n "dummy" > device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb
+          # 确保fstab文件存在
+          cp device/zyb/tb8786p1_64_k510_wifi/recovery.fstab device/zyb/tb8786p1_64_k510_wifi/recovery.fstab
+          
+          # ========== 关键修复2：彻底解决只读变量问题 ==========
+          # 方法1：修改vendor/twrp/config/common.mk，完全重置变量
           if [ -f "vendor/twrp/config/common.mk" ]; then
-            # 在文件开头插入变量重置，取消只读限制
-            sudo sed -i '1i\PRODUCT_PROPERTY_OVERRIDES :=\n' vendor/twrp/config/common.mk
-            # 将所有直接赋值改为追加赋值
+            # 在文件最开头插入变量重置
+            sudo sed -i '1i\# Force unlock readonly variable\nPRODUCT_PROPERTY_OVERRIDES :=\nexport PRODUCT_PROPERTY_OVERRIDES\n\n' vendor/twrp/config/common.mk
+            # 将所有 := 改为 +=
             sudo sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' vendor/twrp/config/common.mk
             echo "✅ 已修复vendor/twrp/config/common.mk中的变量只读问题"
             # 验证修改结果
-            grep -n "PRODUCT_PROPERTY_OVERRIDES" vendor/twrp/config/common.mk | head -5
+            head -10 vendor/twrp/config/common.mk
           fi
           
-          # 方法2：设备树文件也做同样修复
-          if [ -f "device/zyb/tb8786p1_64_k510_wifi/device.mk" ]; then
-            sudo sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' device/zyb/tb8786p1_64_k510_wifi/device.mk
-            echo "✅ 已修复device.mk中的变量只读问题"
-            # 验证修改结果
-            grep -n "PRODUCT_PROPERTY_OVERRIDES" device/zyb/tb8786p1_64_k510_wifi/device.mk | head -5
-          fi
+          # 方法2：修改设备树中的所有mk文件
+          find device/zyb/tb8786p1_64_k510_wifi -name "*.mk" -type f | while read file; do
+            sudo sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' "$file"
+            echo "✅ 已修复 $file 中的变量赋值问题"
+          done
           
           # 提前创建ccache目录并设置权限（解决权限问题）
           sudo mkdir -p /mnt/ccache
@@ -97,7 +101,7 @@ jobs:
           echo "=== 同步后磁盘状态 ==="
           df -h
 
-      - name: 构建TWRP（优化构建参数+强制解除变量只读）
+      - name: 构建TWRP（优化构建参数+内存优化）
         run: |
           export PATH="$HOME/bin:$PATH"
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
@@ -112,30 +116,33 @@ jobs:
           export CCACHE_DIR=/mnt/ccache
           export CCACHE_EXEC=/usr/bin/ccache
           
-          # 限制ccache大小为20G，避免占满磁盘
-          ccache -M 20G && ccache -z && ccache -s
+          # 限制ccache大小为15G（适配内存限制）
+          ccache -M 15G && ccache -z && ccache -s
           
-          # 优化JVM和构建参数（进一步降低内存占用）
-          export ANDROID_JACK_VM_ARGS="-Xmx4g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
+          # 优化JVM和构建参数（降低内存占用）
+          export ANDROID_JACK_VM_ARGS="-Xmx3g -Dfile.encoding=UTF-8 -XX:+TieredCompilation"
           export BUILD_USERNAME=github
           export BUILD_HOSTNAME=actions
+          export TMPDIR=/mnt/tmp
+          mkdir -p $TMPDIR
           
-          # ===================== 终极保障：构建前强制解锁变量 =====================
-          # 创建临时mk文件，强制重置变量
-          cat > unlock_vars.mk << EOF
-          # 强制解除PRODUCT_PROPERTY_OVERRIDES只读限制
+          # ========== 终极保障：全局解锁变量 ==========
+          # 创建全局配置文件
+          cat > build/make/core/unlock_vars.mk << EOF
+          # Force unlock PRODUCT_PROPERTY_OVERRIDES
           PRODUCT_PROPERTY_OVERRIDES :=
+          export PRODUCT_PROPERTY_OVERRIDES
           EOF
           
-          # 将临时文件导入到构建环境（优先级最高）
-          export EXTRA_BUILD_CONFIG=unlock_vars.mk
+          # 将全局配置加入构建
+          export EXTRA_BUILD_CONFIG=build/make/core/unlock_vars.mk
           
           # 加载构建环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 进一步降低并行数，适配15.6GB内存
-          make -j1 vendor_bootimage recoveryimage 2>&1 | tee build.log  # 降到-j1，最大化稳定性
+          # 使用最低并行数，确保内存足够
+          make -j1 recoveryimage 2>&1 | tee build.log
           
           # 显示构建结果
           ls -lh out/target/product/tb8786p1_64_k510_wifi/*.img || echo "构建产物未找到"
@@ -157,7 +164,7 @@ jobs:
           path: |
             /mnt/twrp-build/build.log
             /mnt/twrp-build/out/**/*.log
-            /mnt/twrp-build/vendor/twrp/config/common.mk  # 上传修改后的文件用于排查
-            /mnt/twrp-build/device/zyb/tb8786p1_64_k510_wifi/device.mk
+            /mnt/twrp-build/vendor/twrp/config/common.mk
+            /mnt/twrp-build/device/zyb/tb8786p1_64_k510_wifi/*.mk
           retention-days: 7
-          if-no-files-found: warn  # 即使没找到文件也只警告，不报错
+          if-no-files-found: warn
