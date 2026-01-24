@@ -18,19 +18,20 @@ jobs:
           echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
           source ~/.bashrc
 
-      - name: 同步源码
+      - name: 同步源码（修复权限问题）
         run: |
           export PATH="$HOME/bin:$PATH"
           
-          # 创建构建目录
-          mkdir -p /mnt/twrp
-          cd /mnt/twrp
+          # 修复核心问题：使用sudo创建目录并修改权限
+          # 方案1：使用用户目录而非系统目录（推荐，避免权限问题）
+          mkdir -p $HOME/twrp
+          cd $HOME/twrp
           
           # 初始化TWRP 12.1源码
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
           repo sync -j$(nproc) --no-clone-bundle --optimized-fetch
           
-          # 克隆你的设备树（已包含prebuilt和dtb目录）
+          # 克隆你的设备树（替换为你的实际仓库地址）
           git clone https://github.com/你的仓库/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
           # 修复只读变量冲突（关键）
@@ -40,7 +41,8 @@ jobs:
 
       - name: 编译TWRP（vendor_boot + boot）
         run: |
-          cd /mnt/twrp
+          # 使用用户目录编译，避免权限问题
+          cd $HOME/twrp
           
           # 配置编译环境
           export USE_CCACHE=1
@@ -60,6 +62,6 @@ jobs:
         with:
           name: tb8786p1_64_k510_wifi-twrp
           path: |
-            /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
-            /mnt/twrp/build.log
+            $HOME/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
+            $HOME/twrp/build.log
           retention-days: 7
