@@ -11,21 +11,24 @@ jobs:
           mkdir -p ~/bin
           curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
           chmod a+x ~/bin/repo
-          export PATH=~/bin:$PATH
+          echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+          source ~/.bashrc
+          ~/bin/repo --version
 
       - name: Sync & Build
         run: |
+          export PATH="$HOME/bin:$PATH"
           mkdir build && cd build
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
-          repo sync -j4 --no-clone-bundle
-          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi -b main device/zyb/tb8786p1_64_k510_wifi
+          repo sync -j4 --no-clone-bundle --quiet
+          git clone https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi -b main device/zyb/tb8786p1_64_k510_wifi --depth=1
           export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1
           ccache -M 20G
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
           make -j2 vendor_bootimage
-
-      - name: Upload
+          
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
           name: twrp-img
