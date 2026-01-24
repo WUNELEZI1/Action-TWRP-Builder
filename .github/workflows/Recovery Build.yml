@@ -5,26 +5,28 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 深度清理磁盘空间（关键优化）
+      - name: 深度清理磁盘空间（保留ccache依赖）
         run: |
           # 清理超大冗余包（释放10GB+空间）
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/lib/jvm /usr/lib/python3/dist-packages /var/lib/apt/lists/*
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /var/lib/apt/lists/*
           # 清理docker镜像（释放5GB+空间）
           sudo docker system prune -a -f
-          # 清理日志和缓存
+          # 清理日志和缓存（不删除ccache相关）
           sudo rm -rf /var/log/* /tmp/* ~/.cache/*
           # 检查剩余空间
           df -h
 
-      - name: 安装最小化依赖
+      - name: 安装依赖（明确安装并保留ccache）
         run: |
-          # 仅安装编译必需的依赖，避免冗余
+          # 更新源并明确安装ccache，避免被autoremove删除
           sudo apt update && sudo apt install -y --no-install-recommends \
             git ccache python3 openjdk-11-jdk-headless \
             gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
             liblz4-tool imagemagick lzop
-          # 再次清理apt缓存
-          sudo apt clean && sudo apt autoremove -y
+          # 关键：标记ccache为手动安装（防止被autoremove删除）
+          sudo apt-mark manual ccache
+          # 仅清理无用包，不删除手动标记的ccache
+          sudo apt clean
 
       - name: 配置repo工具
         run: |
@@ -45,7 +47,7 @@ jobs:
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
           repo sync -j2 --no-clone-bundle --optimized-fetch --no-tags
           
-          # 克隆设备树
+          # 克隆设备树（深度1，减少体积）
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
           # 修复语法错误
@@ -60,7 +62,10 @@ jobs:
         run: |
           cd $HOME/twrp
           
-          # 降低ccache缓存大小（从20G降到5G，节省空间）
+          # 验证ccache是否存在
+          which ccache && ccache --version
+          
+          # 配置ccache（5G缓存，节省空间）
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -70,7 +75,7 @@ jobs:
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 关键：降低编译并发数（从nproc降到4，减少内存/磁盘压力）
+          # 低并发编译（减少内存/磁盘压力）
           make -j4 vendor_bootimage bootimage 2>&1 | tee build.log
 
       - name: 上传编译产物
