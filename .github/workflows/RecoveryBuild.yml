@@ -127,7 +127,7 @@ jobs:
           repo sync -j4 --force-sync --no-clone-bundle --optimized-fetch
           echo "Checking disk space after sync:"
           df -h
-        working-directory: workspace
+        working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Clone and Build
         run: |
@@ -146,11 +146,10 @@ jobs:
           echo "✅ Device tree cloned successfully" 
         
           echo ""
-          echo "=== Step 2: 验证关键配置文件 ==="
+          echo "=== Step 2: Verify key configuration files ==="
           for file in Android.mk BoardConfig.mk twrp.mk recovery.fstab; do
             if [ -f "$DEVICE_PATH/$file" ]; then
               echo "✅ Found: $file"
-              # 特殊检查 BoardConfig.mk
               if [ "$file" = "BoardConfig.mk" ]; then
                 echo "   Checking for problematic configurations..."
                 if grep -q "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BOARD_BUILD_VENDOR_BOOT_IMAGE" "$DEVICE_PATH/$file"; then
@@ -163,83 +162,128 @@ jobs:
           done
         
           echo ""
-          echo "=== Step 3: 初始化构建环境 ==="
+          echo "=== Step 2.5: Clean up problematic configurations in BoardConfig.mk ==="
+          if [ -f "$DEVICE_PATH/BoardConfig.mk" ]; then
+            echo "Cleaning problematic configurations in BoardConfig.mk..."
+            
+            cp "$DEVICE_PATH/BoardConfig.mk" "$DEVICE_PATH/BoardConfig.mk.backup"
+            
+            sed -i '/BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_BUILD_VENDOR_BOOT_IMAGE/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/TARGET_NO_RECOVERY/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_VENDOR_RAMDISK_USES_LZ4/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_VENDOR_BOOT_HEADER_VERSION/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i '/BOARD_USES_RECOVERY_AS_BOOT/d' "$DEVICE_PATH/BoardConfig.mk"
+            
+            echo "Cleanup completed. Check results:"
+            grep -n "BOARD_MOVE\|BOARD_BUILD\|TARGET_NO\|BOARD_INCLUDE\|BOARD_EXCLUDE\|BOARD_VENDOR" "$DEVICE_PATH/BoardConfig.mk" || echo "✅ No problematic configurations found"
+          else
+            echo "⚠️ BoardConfig.mk does not exist"
+          fi
+        
+          echo ""
+          echo "=== Step 3: Initialize build environment ==="
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
         
           echo ""
-          echo "=== Step 3.5: 设置关键环境变量 (绕过早期检查) ==="
-          # 这些变量在 lunch 命令读取配置之前设置，可以影响构建系统的初始状态
+          echo "=== Step 3.5: Set key environment variables ==="
           export TARGET_NO_RECOVERY=true
           export TARGET_RECOVERY_IS_VENDOR_BOOT=true
         
           echo ""
-          echo "=== Step 4: 选择构建目标 ==="
-          if ! lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
-            echo "❌ lunch 失败，尝试调试..."
+          echo "=== Step 4: Select build target ==="
+          echo "Attempting to select: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+          
+          if ! lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng 2>&1 | tee lunch.log; then
+            echo "❌ lunch failed, attempting debug..."
             echo ""
-            echo "=== 调试：检查产品配置 ==="
-            find . -name "*${{ github.event.inputs.DEVICE_NAME }}*.mk" -type f | head -5
+            echo "=== Debug information ==="
+            echo "1. Check specific errors in lunch.log:"
+            tail -20 lunch.log
+            
             echo ""
-            echo "=== 调试：检查 make 变量 ==="
-            # 尝试直接调用 get_build_var 看看失败原因
-            make showcommands > /dev/null 2>&1 || true
-            exit 1
+            echo "2. Check device tree product configuration:"
+            find "$DEVICE_PATH" -name "*.mk" -type f | xargs ls -la
+            
+            echo ""
+            echo "3. Check product makefile content:"
+            if [ -f "$DEVICE_PATH/${{ github.event.inputs.MAKEFILE_NAME }}.mk" ]; then
+              cat "$DEVICE_PATH/${{ github.event.inputs.MAKEFILE_NAME }}.mk"
+            fi
+            
+            echo ""
+            echo "4. Attempt to build product directly:"
+            export TARGET_PRODUCT=${{ github.event.inputs.MAKEFILE_NAME }}
+            export TARGET_BUILD_VARIANT=eng
+            echo "Manually set: TARGET_PRODUCT=$TARGET_PRODUCT"
+            echo "Skipping lunch, attempting build directly..."
+          else
+            echo "✅ lunch succeeded!"
+            echo "TARGET_PRODUCT: $TARGET_PRODUCT"
+            echo "TARGET_DEVICE: $TARGET_DEVICE"
           fi
         
-          echo "✅ Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
-          echo "TARGET_PRODUCT: $TARGET_PRODUCT"
-          echo "TARGET_DEVICE: $TARGET_DEVICE"
-        
           echo ""
-          echo "=== Step 5: 检查构建变量 ==="
-          echo "关键变量状态:"
-          for var in AB_OTA_UPDATER AB_OTA_PARTITIONS TARGET_NO_RECOVERY BOARD_USES_RECOVERY_AS_BOOT; do
-            value=$(get_build_var $var 2>/dev/null || echo "(未定义)")
+          echo "=== Step 5: Check build variables ==="
+          echo "Key variable status:"
+          for var in AB_OTA_UPDATER AB_OTA_PARTITIONS TARGET_NO_RECOVERY BOARD_USES_RECOVERY_AS_BOOT TARGET_PRODUCT TARGET_DEVICE; do
+            value=$(get_build_var $var 2>/dev/null || echo "(undefined)")
             echo "  $var: $value"
           done
         
           echo ""
-          echo "=== Step 6: 执行构建 ==="
-          echo "开始构建: $(date)"
+          echo "=== Step 6: Execute build ==="
+          echo "Starting build: $(date)"
           BUILD_START=$(date +%s)
         
-          # 关键变更：使用更通用的构建目标
-          # 'mka' 可能因环境问题失败，使用 'make' 并指定并行数
+          if [ -z "$TARGET_PRODUCT" ]; then
+            echo "⚠️ TARGET_PRODUCT not set, using default value"
+            export TARGET_PRODUCT=${{ github.event.inputs.MAKEFILE_NAME }}
+          fi
+        
+          echo "Building product: $TARGET_PRODUCT"
+          echo "Build variant: eng"
+        
           echo ""
-          echo "📦 构建策略: 使用 'make recoveryimage' (TWRP 标准目标)"
-          echo "构建命令: make -j4 recoveryimage 2>&1 | tee build.log"
+          echo "📦 Build strategy: Full build (make -j4)"
+          echo "Build command: make -j4 2>&1 | tee build.log"
         
-          if make -j4 recoveryimage 2>&1 | tee build.log; then
+          if make -j4 2>&1 | tee build.log; then
             BUILD_RESULT="success"
-            BUILD_TARGET="recoveryimage"
-            echo "✅ 第一阶段构建成功"
-        
-            # 尝试专门构建 vendor_boot 作为第二目标
-            echo ""
-            echo "📦 第二阶段: 尝试构建 vendor_boot"
-            if make -j4 vendor_boot 2>&1 | tee -a build.log; then
-              echo "✅ vendor_boot 构建成功"
-            else
-              echo "⚠️  vendor_boot 构建失败，但 recoveryimage 已成功"
-            fi
+            BUILD_TARGET="full_build"
+            echo "✅ Full build succeeded"
           else
-            echo "❌ recoveryimage 构建失败"
+            echo "❌ Full build failed, attempting recoveryimage..."
+            
+            echo "=== Build errors ==="
+            tail -30 build.log | grep -i "error\|fail\|stop\|missing\|no rule" || tail -20 build.log
+            
             echo ""
-            echo "=== 错误分析 ==="
-            tail -30 build.log | grep -i "error\|fail\|stop\|missing" || tail -20 build.log
-        
-            # 备选方案：尝试构建 boot
-            echo ""
-            echo "🔄 备选方案: 尝试构建 bootimage"
-            if make -j4 bootimage 2>&1 | tee -a build.log; then
+            echo "🔄 Alternative: Build recoveryimage"
+            if make -j4 recoveryimage 2>&1 | tee -a build.log; then
               BUILD_RESULT="success"
-              BUILD_TARGET="bootimage"
-              echo "✅ bootimage 构建成功"
+              BUILD_TARGET="recoveryimage"
+              echo "✅ recoveryimage build succeeded"
             else
-              BUILD_RESULT="failure"
-              echo "❌ 所有构建尝试均失败"
-              exit 1
+              echo "❌ recoveryimage also failed, attempting bootimage..."
+              
+              if make -j4 bootimage 2>&1 | tee -a build.log; then
+                BUILD_RESULT="success"
+                BUILD_TARGET="bootimage"
+                echo "✅ bootimage build succeeded"
+              else
+                BUILD_RESULT="failure"
+                echo "❌ All build attempts failed"
+                
+                echo ""
+                echo "=== Detailed error analysis ==="
+                echo "Last errors:"
+                tail -50 build.log
+                exit 1
+              fi
             fi
           fi
         
@@ -247,81 +291,86 @@ jobs:
           BUILD_TIME=$((BUILD_END - BUILD_START))
         
           echo ""
-          echo "=== Step 7: 检查构建输出 ==="
+          echo "=== Step 7: Check build output ==="
           OUTPUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         
           if [ -d "$OUTPUT_DIR" ]; then
-            echo "✅ 找到输出目录: $OUTPUT_DIR"
+            echo "✅ Found output directory: $OUTPUT_DIR"
             echo ""
-            echo "生成的镜像文件:"
+            echo "Generated image files:"
             find "$OUTPUT_DIR" -name "*.img" -type f 2>/dev/null | while read img; do
               img_size=$(stat -c%s "$img" 2>/dev/null || echo "0")
               size_mb=$((img_size / 1024 / 1024))
               echo "  - $(basename "$img") (${size_mb}MB)"
-            done || echo "  未找到 .img 文件"
+              ls -lh "$img" | awk '{print "    " $5 " " $6 " " $7 " " $8 " " $9}'
+            done || echo "  No .img files found"
         
             echo ""
-            echo "其他重要文件:"
-            ls -la "$OUTPUT_DIR/" | grep -E "(.img|.zip|.md5|kernel|dtb)" || echo "  无相关文件"
+            echo "Directory structure:"
+            ls -la "$OUTPUT_DIR/" | head -20
+            
+            echo ""
+            echo "Special check:"
+            for file in "vendor_boot.img" "recovery.img" "boot.img" "dtbo.img" "vbmeta.img"; do
+              if [ -f "$OUTPUT_DIR/$file" ]; then
+                echo "  ✅ $file exists"
+              fi
+            done
           else
-            echo "⚠️  输出目录不存在: $OUTPUT_DIR"
-            echo "检查构建日志中是否有更早的错误..."
+            echo "⚠️  Output directory does not exist: $OUTPUT_DIR"
+            echo "Check out/target/product/ directory:"
+            find out/target/product -maxdepth 2 -type d 2>/dev/null | head -10
           fi
         
           echo ""
-          echo "=== 构建总结 ==="
+          echo "=== Build summary ==="
           if [ "$BUILD_RESULT" = "success" ]; then
-            echo "✅ 构建成功!"
-            echo "   构建目标: $BUILD_TARGET"
-            echo "   构建时间: ${BUILD_TIME}秒"
-            echo "   输出目录: $OUTPUT_DIR"
+            echo "✅ Build succeeded!"
+            echo "   Build target: $BUILD_TARGET"
+            echo "   Build time: ${BUILD_TIME} seconds"
+            echo "   Output directory: $OUTPUT_DIR"
+            
+            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+            echo "BUILD_TARGET=$BUILD_TARGET" >> $GITHUB_ENV
           else
-            echo "❌ 构建失败"
-            echo "   查看 build.log 获取详细信息"
+            echo "❌ Build failed"
+            echo "   Check build.log for detailed information"
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
       - name: Verify Build Output
+        if: env.BUILD_SUCCESS == 'true'
         run: |
           OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-          echo "Checking build output in $OUTPUT_PATH"
+          echo "Checking build output: $OUTPUT_PATH"
           
           if [ -d "$OUTPUT_PATH" ]; then
-            echo "Contents of $OUTPUT_PATH:"
-            ls -la "$OUTPUT_PATH/" 2>/dev/null || echo "Cannot list directory"
+            echo "✅ Output directory exists"
             
-            echo ""
-            echo "=== Looking for image files ==="
-            
-            # 查找所有可能的镜像文件
             IMAGE_FILES=$(find "$OUTPUT_PATH" -name "*.img" -type f 2>/dev/null)
             
             if [ -n "$IMAGE_FILES" ]; then
               echo "Found image files:"
-              echo "$IMAGE_FILES" | while read -r file; do
-                size=$(ls -lh "$file" | awk '{print $5}')
-                echo "  📄 $(basename "$file") - $size"
+              for img in $IMAGE_FILES; do
+                size=$(ls -lh "$img" | awk '{print $5}')
+                echo "  📄 $(basename "$img") - $size"
               done
               
-              # 检查特定文件
-              for img in "vendor_boot.img" "vendorboot.img" "boot.img" "recovery.img"; do
-                if [ -f "$OUTPUT_PATH/$img" ]; then
-                  echo ""
-                  echo "✅ SUCCESS: $img created"
-                  echo "File size: $(ls -lh "$OUTPUT_PATH/$img" | awk '{print $5}')"
-                  echo "File path: $OUTPUT_PATH/$img"
-                fi
-              done
+              echo "$IMAGE_FILES" > "$OUTPUT_PATH/image_files.txt"
+              
             else
-              echo "❌ No image files found"
-              echo "Directory listing:"
-              find "$OUTPUT_PATH" -type f 2>/dev/null | head -20
+              echo "⚠️ No image files found"
+              echo "Directory contents:"
+              ls -la "$OUTPUT_PATH/"
             fi
           else
-            echo "❌ Output directory not found: $OUTPUT_PATH"
+            echo "❌ Output directory does not exist"
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Prepare Release Files
+        if: env.BUILD_SUCCESS == 'true'
         run: |
           OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
           
@@ -329,39 +378,56 @@ jobs:
             echo "Preparing release files..."
             
             BUILD_INFO_FILE="$OUTPUT_PATH/build_info.txt"
-            echo "TWRP Recovery Build" > "$BUILD_INFO_FILE"
-            echo "===================" >> "$BUILD_INFO_FILE"
-            echo "Device: ${{ github.event.inputs.DEVICE_NAME }}" >> "$BUILD_INFO_FILE"
-            echo "Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}" >> "$BUILD_INFO_FILE"
-            echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img" >> "$BUILD_INFO_FILE"
-            echo "Build ID: ${{ github.run_id }}" >> "$BUILD_INFO_FILE"
-            echo "Date: $(date)" >> "$BUILD_INFO_FILE"
-            echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}" >> "$BUILD_INFO_FILE"
+            cat > "$BUILD_INFO_FILE" << EOF
+TWRP Recovery Build
+===================
+Device: ${{ github.event.inputs.DEVICE_NAME }}
+Product: ${{ env.BUILD_TARGET }}
+Build ID: ${{ github.run_id }}
+Date: $(date)
+Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
+Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+
+Generated files:
+EOF
             
-            echo "Build info saved to $BUILD_INFO_FILE"
-            echo "Release files ready"
+            find "$OUTPUT_PATH" -name "*.img" -type f 2>/dev/null | while read img; do
+              size=$(ls -lh "$img" | awk '{print $5}')
+              echo "- $(basename "$img") ($size)" >> "$BUILD_INFO_FILE"
+            done
+            
+            echo "Build info saved to: $BUILD_INFO_FILE"
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
       - name: Upload to Release
+        if: env.BUILD_SUCCESS == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
-            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendorboot.img
-            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/boot.img
-            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img
+            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
             workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/build_info.txt
-          name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-          tag_name: ${{ github.run_id }}
+          name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+          tag_name: build-${{ github.run_number }}
           body: |
             TWRP Recovery Build for ${{ github.event.inputs.DEVICE_NAME }}
             
-            Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-            Device: ${{ github.event.inputs.DEVICE_NAME }}
-            Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-            Build ID: ${{ github.run_id }}
+            📱 Device: ${{ github.event.inputs.DEVICE_NAME }}
+            🎯 Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+            🔧 Build: ${{ env.BUILD_TARGET }}
+            📅 Date: $(date -u +"%Y-%m-%d %H:%M UTC")
             
-            Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
+            🔗 Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
+            
+            📄 Included files:
+            TWRP recovery images for ${{ github.event.inputs.DEVICE_NAME }}
+            
+            ---
+            
+            **Build Info:**
+            - Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+            - Build ID: ${{ github.run_id }}
+            - Run Number: ${{ github.run_number }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
