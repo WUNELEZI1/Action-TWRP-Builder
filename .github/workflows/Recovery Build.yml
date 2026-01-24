@@ -72,7 +72,7 @@ jobs:
         run: |
           sudo swapoff /swapfile || true
           sudo rm -f /swapfile || true
-          sudo dd if=/dev/zero of=/swapfile bs=1G count=32
+          sudo dd if=/dev/zero of=/swapfile bs=1G count=64
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -112,7 +112,6 @@ jobs:
       - name: Install repo
         run: |
           mkdir -p ~/bin
-          # 替换为清华镜像源下载repo，避开Google权限限制
           curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           sudo rm -f /usr/bin/repo
@@ -155,6 +154,19 @@ jobs:
           git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} "$DEVICE_PATH" 
           [ $? -ne 0 ] && { echo "build_success=false" >> $GITHUB_OUTPUT; exit 1; }
         
+          # 修复 PRODUCT_PROPERTY_OVERRIDES 只读错误
+          sed -i 's/PRODUCT_PROPERTY_OVERRIDES +=/PRODUCT_SYSTEM_DEFAULT_PROPERTIES +=/g' vendor/twrp/config/common.mk
+          sed -i 's/PRODUCT_PROPERTY_OVERRIDES =/PRODUCT_SYSTEM_DEFAULT_PROPERTIES =/g' vendor/twrp/config/common.mk
+          
+          # 修复 BoardConfig.mk 废弃参数警告
+          [ -f "$DEVICE_PATH/BoardConfig.mk" ] && {
+            cp "$DEVICE_PATH/BoardConfig.mk" "$DEVICE_PATH/BoardConfig.mk.backup"
+            sed -i '/PRODUCT_NAME/d;/PRODUCT_DEVICE/d;/PRODUCT_BRAND/d;/PRODUCT_MODEL/d;/PRODUCT_MANUFACTURER/d' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i 's/$(call inherit-product)/include/g' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i 's/BOARD_PLAT_PUBLIC_SEPOLICY_DIR/SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS/g' "$DEVICE_PATH/BoardConfig.mk"
+            sed -i 's/BOARD_PLAT_PRIVATE_SEPOLICY_DIR/SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS/g' "$DEVICE_PATH/BoardConfig.mk"
+          }
+          
           [ -f "$DEVICE_PATH/Android.mk" ] && {
             cp "$DEVICE_PATH/Android.mk" "$DEVICE_PATH/Android.mk.backup"
             sed -i '/PRODUCT_NAME/d;/PRODUCT_DEVICE/d;/PRODUCT_BRAND/d;/PRODUCT_MODEL/d;/PRODUCT_MANUFACTURER/d' "$DEVICE_PATH/Android.mk"
@@ -164,18 +176,6 @@ jobs:
           [ -f "$DEVICE_PATH/device.mk" ] && {
             cp "$DEVICE_PATH/device.mk" "$DEVICE_PATH/device.mk.backup"
             sed -i '/PRODUCT_DEVICE :=/d;/PRODUCT_NAME :=/d;/PRODUCT_BRAND :=/d;/PRODUCT_MODEL :=/d;/PRODUCT_MANUFACTURER :=/d' "$DEVICE_PATH/device.mk"
-          }
-        
-          for file in Android.mk BoardConfig.mk twrp.mk recovery.fstab device.mk; do
-            [ -f "$DEVICE_PATH/$file" ] && [ "$file" = "BoardConfig.mk" ] && ! grep -q "TW_SPLASH_PATH" "$DEVICE_PATH/BoardConfig.mk" && {
-              echo -e "\nTW_SPLASH_PATH := none" >> "$DEVICE_PATH/BoardConfig.mk"
-              echo "TW_SKIP_SPLASH_IMAGE := true" >> "$DEVICE_PATH/BoardConfig.mk"
-            }
-          done
-        
-          [ -f "$DEVICE_PATH/BoardConfig.mk" ] && {
-            cp "$DEVICE_PATH/BoardConfig.mk" "$DEVICE_PATH/BoardConfig.mk.backup"
-            sed -i '/BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d;/BOARD_BUILD_VENDOR_BOOT_IMAGE/d;/TARGET_NO_RECOVERY/d;/BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT/d;/BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE/d;/BOARD_VENDOR_RAMDISK_USES_LZ4/d;/BOARD_VENDOR_BOOT_HEADER_VERSION/d;/BOARD_USES_RECOVERY_AS_BOOT/d' "$DEVICE_PATH/BoardConfig.mk"
           }
         
           source build/envsetup.sh
@@ -193,7 +193,9 @@ jobs:
         
           BUILD_RESULT="failure"
           BUILD_TARGET="none"
-          CORES=$(nproc --all)
+          # 限制编译核心数，避免内存不足崩溃
+          CORES=$(( $(nproc --all) / 2 ))
+          [ $CORES -lt 1 ] && CORES=1
           
           if make -j$CORES ${{ github.event.inputs.BUILD_TARGET }}image 2>&1 | tee build.log; then
             BUILD_RESULT="success"
