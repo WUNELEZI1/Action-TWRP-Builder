@@ -144,13 +144,21 @@ jobs:
             exit 1
           fi
           echo "✅ Device tree cloned successfully" 
+        
           echo ""
           echo "=== Step 2: 验证关键配置文件 ==="
           for file in Android.mk BoardConfig.mk twrp.mk recovery.fstab; do
             if [ -f "$DEVICE_PATH/$file" ]; then
               echo "✅ Found: $file"
+              # 特殊检查 BoardConfig.mk
+              if [ "$file" = "BoardConfig.mk" ]; then
+                echo "   Checking for problematic configurations..."
+                if grep -q "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BOARD_BUILD_VENDOR_BOOT_IMAGE" "$DEVICE_PATH/$file"; then
+                  echo "   ⚠️  Found problematic configs, they should be removed."
+                fi
+              fi
             else
-              echo "⚠️  Missing: $file (可能影响构建)"
+              echo "⚠️  Missing: $file"
             fi
           done
         
@@ -160,69 +168,78 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
         
           echo ""
+          echo "=== Step 3.5: 设置关键环境变量 (绕过早期检查) ==="
+          # 这些变量在 lunch 命令读取配置之前设置，可以影响构建系统的初始状态
+          export TARGET_NO_RECOVERY=true
+          export TARGET_RECOVERY_IS_VENDOR_BOOT=true
+        
+          echo ""
           echo "=== Step 4: 选择构建目标 ==="
           if ! lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng; then
-            echo "❌ Failed to select build target"
+            echo "❌ lunch 失败，尝试调试..."
+            echo ""
+            echo "=== 调试：检查产品配置 ==="
+            find . -name "*${{ github.event.inputs.DEVICE_NAME }}*.mk" -type f | head -5
+            echo ""
+            echo "=== 调试：检查 make 变量 ==="
+            # 尝试直接调用 get_build_var 看看失败原因
+            make showcommands > /dev/null 2>&1 || true
             exit 1
           fi
         
-          echo "Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+          echo "✅ Selected: lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
           echo "TARGET_PRODUCT: $TARGET_PRODUCT"
           echo "TARGET_DEVICE: $TARGET_DEVICE"
         
           echo ""
-          echo "=== Step 5: 关键调试 - 检查构建变量 ==="
-          echo "1. 检查 A/B 和 vendor_boot 相关变量:"
-          echo "   AB_OTA_UPDATER: $(get_build_var AB_OTA_UPDATOR 2>/dev/null || echo '未获取到')"
-          echo "   AB_OTA_PARTITIONS: $(get_build_var AB_OTA_PARTITIONS 2>/dev/null || echo '未获取到')"
-          echo "   BOARD_BUILD_VENDOR_BOOT_IMAGE: $(get_build_var BOARD_BUILD_VENDOR_BOOT_IMAGE 2>/dev/null || echo '未获取到')"
-          echo "   TARGET_NO_RECOVERY: $(get_build_var TARGET_NO_RECOVERY 2>/dev/null || echo '未获取到')"
-          echo "   BOARD_USES_RECOVERY_AS_BOOT: $(get_build_var BOARD_USES_RECOVERY_AS_BOOT 2>/dev/null || echo '未获取到')"
-        
-          echo ""
-          echo "2. 检查可用的 ninja 构建目标:"
-          ninja -t targets all 2>/dev/null | grep -E "(vendor_boot|recoveryimage|bootimage)" | head -10 || echo "   无法列出构建目标"
+          echo "=== Step 5: 检查构建变量 ==="
+          echo "关键变量状态:"
+          for var in AB_OTA_UPDATER AB_OTA_PARTITIONS TARGET_NO_RECOVERY BOARD_USES_RECOVERY_AS_BOOT; do
+            value=$(get_build_var $var 2>/dev/null || echo "(未定义)")
+            echo "  $var: $value"
+          done
         
           echo ""
           echo "=== Step 6: 执行构建 ==="
           echo "开始构建: $(date)"
-          BUILD_START=$(date +%s)  
+          BUILD_START=$(date +%s)
+        
+          # 关键变更：使用更通用的构建目标
+          # 'mka' 可能因环境问题失败，使用 'make' 并指定并行数
           echo ""
-          echo "📦 方案A: 构建 'recoveryimage' (TWRP标准目标)..."
-          if mka -j4 recoveryimage 2>&1 | tee build.log; then
+          echo "📦 构建策略: 使用 'make recoveryimage' (TWRP 标准目标)"
+          echo "构建命令: make -j4 recoveryimage 2>&1 | tee build.log"
+        
+          if make -j4 recoveryimage 2>&1 | tee build.log; then
             BUILD_RESULT="success"
             BUILD_TARGET="recoveryimage"
-          else
-            echo "方案A失败，查看错误..."
-            grep -i "error\|fail\|no rule to make" build.log | head -10 || true
-            
-            # 方案B: 尝试直接构建 vendor_boot
+            echo "✅ 第一阶段构建成功"
+        
+            # 尝试专门构建 vendor_boot 作为第二目标
             echo ""
-            echo "📦 方案B: 构建 'vendor_boot'..."
-            if mka -j4 vendor_boot 2>&1 | tee -a build.log; then
-              BUILD_RESULT="success"
-              BUILD_TARGET="vendor_boot"
+            echo "📦 第二阶段: 尝试构建 vendor_boot"
+            if make -j4 vendor_boot 2>&1 | tee -a build.log; then
+              echo "✅ vendor_boot 构建成功"
             else
-              # 方案C: 尝试完整构建
-              echo ""
-              echo "📦 方案C: 完整构建 (mka -j4)..."
-              if mka -j4 2>&1 | tee -a build.log; then
-                BUILD_RESULT="success"
-                BUILD_TARGET="full_build"
-              else
-                echo "❌ 所有构建方案均失败"
-                
-                echo ""
-                echo "🔍 构建失败分析:"
-                echo "最后的错误信息:"
-                tail -50 build.log | grep -A5 -B5 -i "error\|fail"
-                
-                echo ""
-                echo "检查输出目录是否存在:"
-                ls -la out/target/product/*/ 2>/dev/null | head -20 || echo "输出目录不存在"
-                
-                exit 1
-              fi
+              echo "⚠️  vendor_boot 构建失败，但 recoveryimage 已成功"
+            fi
+          else
+            echo "❌ recoveryimage 构建失败"
+            echo ""
+            echo "=== 错误分析 ==="
+            tail -30 build.log | grep -i "error\|fail\|stop\|missing" || tail -20 build.log
+        
+            # 备选方案：尝试构建 boot
+            echo ""
+            echo "🔄 备选方案: 尝试构建 bootimage"
+            if make -j4 bootimage 2>&1 | tee -a build.log; then
+              BUILD_RESULT="success"
+              BUILD_TARGET="bootimage"
+              echo "✅ bootimage 构建成功"
+            else
+              BUILD_RESULT="failure"
+              echo "❌ 所有构建尝试均失败"
+              exit 1
             fi
           fi
         
@@ -238,18 +255,17 @@ jobs:
             echo ""
             echo "生成的镜像文件:"
             find "$OUTPUT_DIR" -name "*.img" -type f 2>/dev/null | while read img; do
-              img_size=$(stat -c%s "$img" 2>/dev/null || echo "未知")
-              echo "  - $(basename "$img") ($((img_size/1024/1024))MB)"
-            done || echo "  未找到镜像文件"
-            
+              img_size=$(stat -c%s "$img" 2>/dev/null || echo "0")
+              size_mb=$((img_size / 1024 / 1024))
+              echo "  - $(basename "$img") (${size_mb}MB)"
+            done || echo "  未找到 .img 文件"
+        
             echo ""
-            echo "目录结构:"
-            ls -la "$OUTPUT_DIR/" | head -20
+            echo "其他重要文件:"
+            ls -la "$OUTPUT_DIR/" | grep -E "(.img|.zip|.md5|kernel|dtb)" || echo "  无相关文件"
           else
             echo "⚠️  输出目录不存在: $OUTPUT_DIR"
-            echo "当前工作目录: $(pwd)"
-            echo "out目录结构:"
-            find out -type d -maxdepth 3 2>/dev/null | head -20 || true
+            echo "检查构建日志中是否有更早的错误..."
           fi
         
           echo ""
@@ -261,10 +277,9 @@ jobs:
             echo "   输出目录: $OUTPUT_DIR"
           else
             echo "❌ 构建失败"
-            echo "   最后尝试的目标: $BUILD_TARGET"
+            echo "   查看 build.log 获取详细信息"
           fi
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
       - name: Verify Build Output
         run: |
           OUTPUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
