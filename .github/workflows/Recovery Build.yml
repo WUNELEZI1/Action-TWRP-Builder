@@ -7,78 +7,54 @@ jobs:
     steps:
       - name: 深度清理磁盘空间（保留ccache依赖）
         run: |
-          # 清理超大冗余包（释放10GB+空间）
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /var/lib/apt/lists/*
-          # 清理docker镜像（释放5GB+空间）
           sudo docker system prune -a -f
-          # 清理日志和缓存（不删除ccache相关）
           sudo rm -rf /var/log/* /tmp/* ~/.cache/*
-          # 检查剩余空间
           df -h
 
       - name: 安装依赖（明确安装并保留ccache）
         run: |
-          # 更新源并明确安装ccache，避免被autoremove删除
-          sudo apt update && sudo apt install -y --no-install-recommends \
-            git ccache python3 openjdk-11-jdk-headless \
-            gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
-            liblz4-tool imagemagick lzop
-          # 关键：标记ccache为手动安装（防止被autoremove删除）
+          sudo apt update && sudo apt install -y --no-install-recommends git ccache python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop
           sudo apt-mark manual ccache
-          # 仅清理无用包，不删除手动标记的ccache
           sudo apt clean
 
       - name: 配置repo工具（多源兜底，避免网络超时）
         run: |
           mkdir -p ~/bin
-          # 优先用清华源，失败则用官方源
-          curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo || \
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
+          curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo || curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           export PATH="$HOME/bin:$PATH"
 
       - name: 同步源码并修复核心语法错误
         run: |
           export PATH="$HOME/bin:$PATH"
-          
-          # 创建编译目录
-          mkdir -p $HOME/twrp
-          cd $HOME/twrp
-          
-          # 极致精简源码同步（仅同步必需部分）
+          mkdir -p $HOME/twrp && cd $HOME/twrp
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
           repo sync -j2 --no-clone-bundle --optimized-fetch --no-tags
-          
-          # 克隆设备树（深度1，减少体积）
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
-          # ========== 核心修复：全局替换所有.mk文件的PRODUCT_PROPERTY_OVERRIDES赋值方式 ==========
-          # 1. 删除所有export PRODUCT_PROPERTY_OVERRIDES语句（根源问题）
-          find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
-          # 2. 将所有"PRODUCT_PROPERTY_OVERRIDES :="替换为"PRODUCT_PROPERTY_OVERRIDES +="（只读变量只能追加）
-          find . -name "*.mk" -type f -exec sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES +=/g' {} \;
+          # 核心修复1：单行创建roomservice.xml（完全规避YAML多行解析错误）
+          mkdir -p .repo/local_manifests
+          echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
           
-          # 再次清理临时文件
+          # 核心修复2：全局修复.mk文件的只读变量问题
+          find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
+          find . -name "*.mk" -type f -exec sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES ?=/g' {} \;
+          find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
+          
+          # 清理临时文件
           rm -rf .repo/.repo_cache ~/.repo/cache
 
       - name: 编译TWRP镜像（更低并发+小缓存，适配内存限制）
         run: |
           cd $HOME/twrp
-          
-          # 验证ccache是否存在
           which ccache && ccache --version
-          
-          # 配置ccache（5G缓存，节省空间）
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
           export ALLOW_MISSING_DEPENDENCIES=true
           ccache -M 5G
-          
-          # 加载环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng
-          
-          # 降低并发数到2，适配15.6GB内存（避免内存不足崩溃）
           make -j2 vendor_bootimage bootimage 2>&1 | tee build.log
 
       - name: 上传编译产物
