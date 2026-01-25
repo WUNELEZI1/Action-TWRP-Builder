@@ -51,12 +51,15 @@ jobs:
           java -version
           echo "========================================"
 
-      - name: 同步源码（指定大磁盘目录）
+      - name: 同步源码（修复权限+根目录扩容）
         run: |
           echo "========================================"
-          # 关键：将源码放到/mnt（74G空间，仅用4.1G），避免根目录满
-          mkdir -p /mnt/twrp && cd /mnt/twrp
+          # 关键修复：用sudo创建/mnt/twrp，解决权限问题
+          sudo mkdir -p /mnt/twrp
+          sudo chown -R runner:runner /mnt/twrp
+          cd /mnt/twrp
           echo $(pwd)
+          echo "----------------------------------------"
           # repo初始化（关闭版本检查，避免告警）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
           # 同步源码（降低并发避免IO过载）
@@ -75,11 +78,11 @@ jobs:
           find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
           echo "========================================"
 
-      - name: 编译镜像（解决无输出+磁盘瓶颈）
+      - name: 编译镜像（修复目录+心跳日志）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
-          # 切换到/mnt/twrp（大磁盘目录）
+          # 切换到有权限的/mnt/twrp目录
           cd /mnt/twrp
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
