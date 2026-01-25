@@ -35,12 +35,13 @@ jobs:
           df -h
           echo "========================================"
 
-      - name: 安装依赖
+      - name: 安装依赖（修复--no-repo-verify参数错误）
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y --no-repo-verify git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
+          # 关键修复：移除apt的--no-repo-verify参数（这个参数属于repo工具，不是apt）
+          sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
           sudo apt clean
           git --version
           python3 --version
@@ -55,6 +56,7 @@ jobs:
           cd /mnt/twrp
           echo $(pwd)
           echo "----------------------------------------"
+          # repo init保留--no-repo-verify（这是repo工具的合法参数）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           echo "✅ 源码同步完成！"
