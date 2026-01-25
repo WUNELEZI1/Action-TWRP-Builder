@@ -60,46 +60,39 @@ jobs:
           echo "✅ 源码同步完成！"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           
-          # 验证设备树配置文件
-          if [ -f "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk" ] && [ -f "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk" ]; then
+          # 验证设备树配置文件（新增检查Products.mk）
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk" ] && [ -f "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk" ] && [ -f "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk" ]; then
             echo "✅ 设备树核心配置文件存在"
           else
-            echo "❌ 设备树配置文件缺失"
+            echo "❌ 设备树配置文件缺失（需AndroidProducts.mk/omni_xxx.mk/BoardConfig.mk）"
             exit 1
           fi
           
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
-          sudo chmod +w vendor/twrp/build/tools/roomservice.py
-          echo '#!/usr/bin/env python3;import os;import sys;import xml.etree.ElementTree as ET;def is_in_manifest(target_path):manifest_path=os.path.join(os.getcwd(),".repo/manifest.xml");if not os.path.exists(manifest_path):return False;tree=ET.parse(manifest_path);root=tree.getroot();for project in root.findall("project"):if project.get("path")==target_path:return True;return False;def add_to_manifest(dependency,repo_path):manifest_path=os.path.join(repo_path,".repo/local_manifests/roomservice.xml");tree=ET.parse(manifest_path);root=tree.getroot();project=ET.SubElement(root,"project");project.set("path",dependency["path"]);project.set("name",dependency["name"]);project.set("remote",dependency.get("remote","github"));project.set("revision",dependency.get("revision","main"));tree.write(manifest_path);def fetch_dependencies(repo_path):dependencies=[];dependencies.append({"path":"device/zyb/tb8786p1_64_k510_wifi","name":"WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi","remote":"github","revision":"main"});for dependency in dependencies:if not isinstance(dependency,dict):print("[WARNING] Skipping invalid dependency:",dependency);continue;if "path" not in dependency:print("[WARNING] Dependency missing path key:",dependency);continue;if not is_in_manifest(dependency["path"]):print("Adding dependency:",dependency["path"]);add_to_manifest(dependency,repo_path);else:print("Dependency already in manifest:",dependency["path"]);def main():repo_path=os.getcwd() if len(sys.argv)<2 else sys.argv[1];fetch_dependencies(repo_path);if __name__=="__main__":main()' > vendor/twrp/build/tools/roomservice.py
-          find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
-          find . -name "*.mk" -type f -exec sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES ?=/g' {} \;
-          find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
           echo "========================================"
 
-      - name: 编译镜像（适配MTK设备+你的BoardConfig.mk）
+      - name: 编译镜像（用lunch加载设备树）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
-          # 核心编译变量（与设备树配置对齐）
+          # 基础环境配置
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
-          export TARGET_DEVICE=tb8786p1_64_k510_wifi
-          export PRODUCT_NAME=omni_tb8786p1_64_k510_wifi
-          export BUILD_TYPE=eng
           export LC_ALL=C
           export BUILD_START_TIME=$(date +%s)
           
           echo "📋 编译前磁盘状态："
           df -h /mnt
           
-          # 加载编译环境
+          # 加载环境并执行lunch（关键：加载你的设备树）
           echo "🔧 加载编译环境..."
-          source build/envsetup.sh > /dev/null 2>&1
-          echo "✅ 环境加载完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
+          source build/envsetup.sh
+          echo "✅ 环境加载完成，执行lunch选择设备..."
+          lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
           
-          # 心跳日志（实时监控）
+          # 心跳日志
           echo "🚀 开始编译（-j2，适配MTK设备）- $(date)"
           (
             while true; do
@@ -112,13 +105,8 @@ jobs:
           ) &
           HEARTBEAT_PID=$!
           
-          # 核心修改：适配你的BoardConfig.mk，编译MTK设备的TWRP产物
-          make -j2 \
-            PRODUCT=${PRODUCT_NAME} \
-            TARGET_DEVICE=${TARGET_DEVICE} \
-            BUILD_TYPE=${BUILD_TYPE} \
-            recoveryimage vendorbootimage \
-            2>&1 | tee -a build.log
+          # 编译TWRP核心产物
+          mka recoveryimage vendorbootimage 2>&1 | tee -a build.log
           
           # 停止心跳日志
           kill $HEARTBEAT_PID
@@ -127,11 +115,10 @@ jobs:
           echo "✅ BUILD END - $(date)"
           echo "⏱️  总耗时：$(( $(date +%s) - BUILD_START_TIME ))s"
           
-          # 检查产物（重点关注vendor_boot.img）
+          # 检查产物
           echo "📦 检查编译产物："
           if [ -d "out/target/product/tb8786p1_64_k510_wifi" ]; then
             ls -lh out/target/product/tb8786p1_64_k510_wifi/
-            # 验证核心镜像
             if ls out/target/product/tb8786p1_64_k510_wifi/vendor_boot.img 1> /dev/null 2>&1; then
               echo "🎉 编译成功！生成TWRP核心镜像：vendor_boot.img"
               ls -lh out/target/product/tb8786p1_64_k510_wifi/vendor_boot.img
@@ -151,5 +138,5 @@ jobs:
           path: |
             /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
             /mnt/twrp/build.log
+            /mnt/twrp/lunch.log
           retention-days: 7
-          
