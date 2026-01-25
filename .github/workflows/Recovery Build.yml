@@ -59,18 +59,25 @@ jobs:
           repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           echo "✅ 源码同步完成！"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          # 创建空splash.xml解决缺失警告
+          
+          # 自动删除冲突的Android.mk
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
+            echo "❌ 删除冲突文件Android.mk"
+            rm -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
+          fi
+          
+          # 双重保障：创建空splash.xml
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/twres
           echo '<?xml version="1.0" encoding="UTF-8"?>' > device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
           echo '<splash />' >> device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
-          # 验证所有核心文件
+          
+          # 验证核心文件
           REQUIRED_FILES=(
             "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk"
             "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk"
             "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk"
             "device/zyb/tb8786p1_64_k510_wifi/recovery.fstab"
             "device/zyb/tb8786p1_64_k510_wifi/twrp.mk"
-            "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
           )
           for file in "${REQUIRED_FILES[@]}"; do
             if [ -f "$file" ]; then
@@ -80,6 +87,7 @@ jobs:
               exit 1
             fi
           done
+          
           # 生成local_manifest
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/tb8786p1_64_k510_wifi.xml
