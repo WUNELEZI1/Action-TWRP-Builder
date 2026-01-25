@@ -20,20 +20,16 @@ jobs:
           echo "Java: $(java --version 2>&1 | head -1)"
           echo "========================================"
 
-      - name: 深度清理磁盘（释放20G+）
+      - name: 深度清理磁盘
         run: |
           echo "========================================"
           df -h
           echo "----------------------------------------"
-          # 1. 删除所有超大文件
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
           sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
-          # 2. 清理docker全部数据（最大空间释放）
           sudo docker system prune -a -f --volumes
-          # 3. 清理apt缓存+日志+临时文件
           sudo apt clean
           sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/*
-          # 4. 清理swap缓存
           sudo swapoff -a && sudo swapon -a
           echo "----------------------------------------"
           df -h
@@ -44,33 +40,28 @@ jobs:
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
+          sudo apt install -y --no-repo-verify git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
           sudo apt clean
           git --version
           python3 --version
           java -version
           echo "========================================"
 
-      - name: 同步源码（修复权限+根目录扩容）
+      - name: 同步源码
         run: |
           echo "========================================"
-          # 关键修复：用sudo创建/mnt/twrp，解决权限问题
           sudo mkdir -p /mnt/twrp
           sudo chown -R runner:runner /mnt/twrp
           cd /mnt/twrp
           echo $(pwd)
           echo "----------------------------------------"
-          # repo初始化（关闭版本检查，避免告警）
-          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
-          # 同步源码（降低并发避免IO过载）
-          repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags
-          # 克隆设备树
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
+          repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
+          echo "✅ 源码同步完成！"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           ls -l device/zyb/tb8786p1_64_k510_wifi/ || echo "设备树克隆失败！"
-          # 配置roomservice.xml
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
-          # 修复脚本和mk文件
           sudo chmod +w vendor/twrp/build/tools/roomservice.py
           echo '#!/usr/bin/env python3;import os;import sys;import xml.etree.ElementTree as ET;def is_in_manifest(target_path):manifest_path=os.path.join(os.getcwd(),".repo/manifest.xml");if not os.path.exists(manifest_path):return False;tree=ET.parse(manifest_path);root=tree.getroot();for project in root.findall("project"):if project.get("path")==target_path:return True;return False;def add_to_manifest(dependency,repo_path):manifest_path=os.path.join(repo_path,".repo/local_manifests/roomservice.xml");tree=ET.parse(manifest_path);root=tree.getroot();project=ET.SubElement(root,"project");project.set("path",dependency["path"]);project.set("name",dependency["name"]);project.set("remote",dependency.get("remote","github"));project.set("revision",dependency.get("revision","main"));tree.write(manifest_path);def fetch_dependencies(repo_path):dependencies=[];dependencies.append({"path":"device/zyb/tb8786p1_64_k510_wifi","name":"WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi","remote":"github","revision":"main"});for dependency in dependencies:if not isinstance(dependency,dict):print("[WARNING] Skipping invalid dependency:",dependency);continue;if "path" not in dependency:print("[WARNING] Dependency missing path key:",dependency);continue;if not is_in_manifest(dependency["path"]):print("Adding dependency:",dependency["path"]);add_to_manifest(dependency,repo_path);else:print("Dependency already in manifest:",dependency["path"]);def main():repo_path=os.getcwd() if len(sys.argv)<2 else sys.argv[1];fetch_dependencies(repo_path);if __name__=="__main__":main()' > vendor/twrp/build/tools/roomservice.py
           find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
@@ -78,36 +69,34 @@ jobs:
           find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
           echo "========================================"
 
-      - name: 编译镜像（修复核心命令+心跳日志）
+      - name: 编译镜像（强制实时输出）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
-          # 切换到有权限的/mnt/twrp目录
           cd /mnt/twrp
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export BUILD_START_TIME=$(date +%s)
           
-          # 编译前最后检查磁盘
           echo "📋 编译前磁盘状态："
           df -h /mnt
           
-          # 关键修复：正确加载envsetup.sh并导出命令
-          echo "🔧 加载编译环境..."
-          source build/envsetup.sh
-          # 强制导出lunch等命令到当前shell
-          export -f lunch
-          export -f m
+          # 强制加载环境+输出日志
+          echo "🔧 加载编译环境（强制输出）..."
+          source build/envsetup.sh 2>&1 | tee -a build.log
           echo "✅ 环境加载完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
           
-          # 关键修复：正确执行lunch命令
-          echo "🔧 配置编译目标..."
-          bash -c "source build/envsetup.sh && lunch omni_tb8786p1_64_k510_wifi-eng"
+          # 强制执行lunch+输出所有日志
+          echo "🔧 配置编译目标（强制输出）..."
+          (source build/envsetup.sh && lunch omni_tb8786p1_64_k510_wifi-eng) 2>&1 | tee -a build.log
+          if [ $? -ne 0 ]; then
+            echo "❌ lunch命令执行失败！"
+            exit 1
+          fi
           echo "✅ 编译目标配置完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
           
-          # 核心编译：使用m命令替代直接make + 降低并发避免IO过载 + 强制实时输出
-          echo "🚀 开始编译（-j4）- $(date)"
-          # 每10秒输出一次心跳日志，防止无输出
+          # 心跳日志+编译（强制每10秒输出）
+          echo "🚀 开始编译（-j2，降低并发避免卡顿）- $(date)"
           (
             while true; do
               echo "❤️ 编译中（已运行$(( $(date +%s) - BUILD_START_TIME ))s）- 磁盘可用：$(df -h /mnt | grep /mnt | awk '{print $4}') - CPU负载：$(uptime | awk '{print $10 $11 $12}')"
@@ -116,17 +105,19 @@ jobs:
           ) &
           HEARTBEAT_PID=$!
           
-          # 关键修复：使用m命令编译，适配TWRP的编译体系
-          bash -c "source build/envsetup.sh && m -j4 vendor_bootimage bootimage" 2>&1 | tee -a build.log
+          # 强制编译+实时输出所有日志
+          (source build/envsetup.sh && m -j2 vendor_bootimage bootimage) 2>&1 | tee -a build.log
+          if [ $? -ne 0 ]; then
+            echo "❌ 编译失败！"
+            kill $HEARTBEAT_PID
+            exit 1
+          fi
           
-          # 停止心跳日志
           kill $HEARTBEAT_PID
-          
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
           echo "⏱️  总耗时：$(( $(date +%s) - BUILD_START_TIME ))s"
-          # 检查产物
-          ls -l out/target/product/tb8786p1_64_k510_wifi/ || echo "⚠️  产物目录不存在"
+          ls -l out/target/product/tb8786p1_64_k510_wifi/
           ls -l out/target/product/tb8786p1_64_k510_wifi/*.img || echo "⚠️  无镜像生成"
           echo "========================================"
 
