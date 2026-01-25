@@ -59,14 +59,15 @@ jobs:
           repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           echo "✅ 源码同步完成！"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          # 验证配置文件
-          if [ -f "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk" ]; then
-            echo "✅ AndroidProducts.mk 配置文件存在"
-            cat device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk
+          
+          # 验证设备树配置文件
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk" ] && [ -f "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk" ]; then
+            echo "✅ 设备树核心配置文件存在"
           else
-            echo "❌ AndroidProducts.mk 不存在"
+            echo "❌ 设备树配置文件缺失"
             exit 1
           fi
+          
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
           sudo chmod +w vendor/twrp/build/tools/roomservice.py
@@ -76,12 +77,12 @@ jobs:
           find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
           echo "========================================"
 
-      - name: 编译镜像（绕开lunch，直接make）
+      - name: 编译镜像（适配MTK设备+你的BoardConfig.mk）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
-          # 核心：直接设置编译变量，跳过lunch
+          # 核心编译变量（与设备树配置对齐）
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
@@ -93,13 +94,13 @@ jobs:
           echo "📋 编译前磁盘状态："
           df -h /mnt
           
-          # 加载环境但不执行lunch
+          # 加载编译环境
           echo "🔧 加载编译环境..."
           source build/envsetup.sh > /dev/null 2>&1
           echo "✅ 环境加载完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
           
-          # 心跳日志
-          echo "🚀 开始编译（-j2）- $(date)"
+          # 心跳日志（实时监控）
+          echo "🚀 开始编译（-j2，适配MTK设备）- $(date)"
           (
             while true; do
               ELAPSED=$(( $(date +%s) - BUILD_START_TIME ))
@@ -111,12 +112,12 @@ jobs:
           ) &
           HEARTBEAT_PID=$!
           
-          # 核心：直接用make编译，指定产物
+          # 核心修改：适配你的BoardConfig.mk，编译MTK设备的TWRP产物
           make -j2 \
             PRODUCT=${PRODUCT_NAME} \
             TARGET_DEVICE=${TARGET_DEVICE} \
             BUILD_TYPE=${BUILD_TYPE} \
-            vendor_bootimage bootimage \
+            recoveryimage vendorbootimage \
             2>&1 | tee -a build.log
           
           # 停止心跳日志
@@ -126,23 +127,24 @@ jobs:
           echo "✅ BUILD END - $(date)"
           echo "⏱️  总耗时：$(( $(date +%s) - BUILD_START_TIME ))s"
           
-          # 检查产物
+          # 检查产物（重点关注vendor_boot.img）
           echo "📦 检查编译产物："
           if [ -d "out/target/product/tb8786p1_64_k510_wifi" ]; then
             ls -lh out/target/product/tb8786p1_64_k510_wifi/
-            if ls out/target/product/tb8786p1_64_k510_wifi/*.img 1> /dev/null 2>&1; then
-              echo "🎉 编译成功！生成的镜像："
-              ls -lh out/target/product/tb8786p1_64_k510_wifi/*.img
+            # 验证核心镜像
+            if ls out/target/product/tb8786p1_64_k510_wifi/vendor_boot.img 1> /dev/null 2>&1; then
+              echo "🎉 编译成功！生成TWRP核心镜像：vendor_boot.img"
+              ls -lh out/target/product/tb8786p1_64_k510_wifi/vendor_boot.img
             else
-              echo "⚠️  无镜像生成，查看编译日志："
-              tail -50 build.log
+              echo "⚠️  未生成vendor_boot.img，查看日志末尾："
+              tail -100 build.log
             fi
           else
             echo "❌ 产物目录不存在"
           fi
           echo "========================================"
 
-      - name: 上传产物
+      - name: 上传产物（含日志）
         uses: actions/upload-artifact@v4
         with:
           name: tb8786p1_64_k510_wifi-twrp
@@ -150,3 +152,4 @@ jobs:
             /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
             /mnt/twrp/build.log
           retention-days: 7
+          
