@@ -55,21 +55,16 @@ jobs:
           cd /mnt/twrp
           echo $(pwd)
           echo "----------------------------------------"
-          # 初始化TWRP源码（twrp-12.1，适配Android 12）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
-          # 同步源码（-j4适配GitHub Action资源限制）
           repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           echo "✅ 源码同步完成！"
-          
-          # 克隆设备树（适配MT6768芯片）
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          
-          # 验证设备树核心文件（确保AB分区、动态分区配置完整）
           REQUIRED_FILES=(
             "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk"
             "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk"
             "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk"
             "device/zyb/tb8786p1_64_k510_wifi/recovery.fstab"
+            "device/zyb/tb8786p1_64_k510_wifi/twrp.mk"
           )
           for file in "${REQUIRED_FILES[@]}"; do
             if [ -f "$file" ]; then
@@ -79,79 +74,63 @@ jobs:
               exit 1
             fi
           done
-          
-          # 生成local_manifest（确保设备树被repo识别）
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo '<manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo '  <project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" />' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
-          
           echo "========================================"
 
-      - name: 编译镜像（核心修复：强制加载设备树）
+      - name: 编译镜像
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
-          # 核心环境变量（适配MT6768+AB分区）
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export LC_ALL=C
           export BUILD_START_TIME=$(date +%s)
-          # 强制指定产品和设备名（解决默认aosp_arm问题）
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
-          export TARGET_BUILD_VARIANT=eng
-          
           echo "📋 编译前磁盘状态："
           df -h /mnt
-          
-          # 加载环境+执行lunch（双重确保设备树加载）
           source build/envsetup.sh
-          echo "✅ 环境加载完成，执行lunch选择设备..."
+          echo "✅ 环境加载完成，执行lunch..."
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
-          
-          # 严格验证设备树加载结果
-          if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log && grep -q "TARGET_DEVICE=tb8786p1_64_k510_wifi" lunch.log; then
-            echo "✅ lunch成功加载设备树配置"
+          if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log && grep -q "TARGET_ARCH=arm64" lunch.log; then
+            echo "✅ 设备树加载成功"
           else
-            echo "❌ lunch未加载设备树，当前TARGET_PRODUCT=$(grep TARGET_PRODUCT lunch.log | tail -1)"
+            echo "❌ 设备树加载失败"
             cat lunch.log
             exit 1
           fi
-          
-          # 编译TWRP核心产物（适配vendor_boot分区）
-          mka recoveryimage vendorbootimage 2>&1 | tee -a build.log
-          
-          # 检查产物（适配64MB vendor_boot分区）
+          echo "🚀 开始编译TWRP..."
+          mka vendorbootimage 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
           OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
           if [ -d "$OUT_DIR" ]; then
             ls -lh $OUT_DIR/
-            # 验证核心镜像（vendor_boot.img为关键产物）
             if [ -f "$OUT_DIR/vendor_boot.img" ]; then
-              echo "🎉 编译成功！生成TWRP核心镜像："
+              echo "🎉 编译成功！生成TWRP镜像：vendor_boot.img"
               ls -lh $OUT_DIR/vendor_boot.img
-              # 验证镜像大小（不超过64MB）
               IMG_SIZE=$(du -m "$OUT_DIR/vendor_boot.img" | awk '{print $1}')
               if [ $IMG_SIZE -le 64 ]; then
                 echo "✅ 镜像大小合规（${IMG_SIZE}MB ≤ 64MB）"
               else
-                echo "⚠️  镜像大小超标（${IMG_SIZE}MB > 64MB），可能无法刷入"
+                echo "⚠️  镜像大小超标（${IMG_SIZE}MB > 64MB）"
               fi
             else
-              echo "⚠️  未生成vendor_boot.img，查看编译日志末尾："
+              echo "⚠️  未生成vendor_boot.img"
               tail -100 build.log
             fi
           else
-            echo "❌ 产物目录不存在，查看完整编译日志："
+            echo "❌ 产物目录不存在"
             tail -200 build.log
           fi
           echo "========================================"
 
-      - name: 上传产物（含日志便于排查）
+      - name: 上传产物+日志
         uses: actions/upload-artifact@v4
         with:
           name: tb8786p1_64_k510_wifi-twrp
