@@ -5,47 +5,44 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 深度清理磁盘空间（保留ccache依赖）
+      - name: 清理磁盘空间
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /var/lib/apt/lists/*
           sudo docker system prune -a -f
           sudo rm -rf /var/log/* /tmp/* ~/.cache/*
           df -h
 
-      - name: 安装依赖（明确安装并保留ccache）
+      - name: 安装依赖
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends git ccache python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop
           sudo apt-mark manual ccache
           sudo apt clean
 
-      - name: 配置repo工具（多源兜底，避免网络超时）
+      - name: 配置repo工具
         run: |
           mkdir -p ~/bin
           curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o ~/bin/repo || curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           export PATH="$HOME/bin:$PATH"
 
-      - name: 同步源码并修复核心语法错误
+      - name: 同步源码并修复错误
         run: |
           export PATH="$HOME/bin:$PATH"
           mkdir -p $HOME/twrp && cd $HOME/twrp
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
           repo sync -j2 --no-clone-bundle --optimized-fetch --no-tags
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          
-          # 核心修复1：单行创建roomservice.xml（完全规避YAML多行解析错误）
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
-          
-          # 核心修复2：全局修复.mk文件的只读变量问题
+          sudo chmod +w vendor/twrp/build/tools/roomservice.py
+          # Base64编码单行写入Python脚本，彻底规避YAML解析冲突
+          echo "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MKbXBvcnQgc3lzCmltcG9ydCB4bWwubXRyZS5FbGVtZW50VHJlZSBhcyBFTgoKZGVmIGlzX2luX21hbmlmZXN0KHRhcmdldF9wYXRoKTogCiAgICBtYW5pZmVzdF9wYXRoID0gb3MucGF0aChvcy5nZXRjd2QoKSwgJy5yZXBvL21hbmlmZXN0LnhtbCcpCiAgICBpZiBub3Qgb3MuZXhpc3RzKG1hbmlmZXN0X3BhdGgpOgogICAgICAgIHJldHVybiBmYWxzZQogICAgdHJlZSA9IEVULnBhcnNlKG1hbmlmZXN0X3BhdGgpCiAgICByb290ID0gdHJlZS5nZXRyb290KCkKICAgIGZvciBwcm9qZWN0IGluIHJvb3QuZmluZGFsbCgncHJvamVjdCcpOgogICAgICAgIGlmIHByb2plY3QuZ2V0KCdwYXRoJyk9PSB0YXJnZXRfcGF0aDoKICAgICAgICAgICAgcmV0dXJuIHRydWUKICAgIHJldHVybiBmYWxzZQoKZGVmIGFkZF90b19tYW5pZmVzdChkZXBlbmRlbmN5LCByZXBvX3BhdGgpOgogICAgbWFuaWZlc3RfcGF0aCA9IG9zLnBhdGgocmVwb19wYXRoLCAnLnJlcG8vbG9jYWxfbWFuaWZlc3RzL3Jvb21zZXJ2aWNlLnhtbCcpCiAgICB0cmVlID0gRVQucGFyc2UobWFuaWZlc3RfcGF0aCkKICAgIHJvb3QgPSB0cmVlLmdldHJvb3QoKQogICAgcHJvamVjdCA9IEVUIFN1YmVFbGVtZW50KHJvb3QsICdwcm9qZWN0JykKICAgIHByb2plY3Quc2V0KCdwYXRoJywgZGVwZW5kZW5jeSdwYXRoJykKICAgIHByb2plY3Quc2V0KCduYW1lJywgZGVwZW5kZW5jeSduYW1lJykKICAgIHByb2plY3Quc2V0KCdyZW1vdGUnLCBkZXBlbmRlbmN5LmdldCgncmVtb3RlJywgJ2dpdGh1YicpKQogICAgcHJvamVjdC5zZXQoJ3JldmlzaW9uJywgZGVwZW5kZW5jeS5nZXQoJ3JldmlzaW9uJywgJ21haW4nKSkKICAgIHRyZWUud3JpdGUobWFuaWZlc3RfcGF0aCkKCmRlZiBmZXRjaF9kZXBlbmRlbmNpZXMocmVwb19wYXRoKTogCiAgICBkZXBlbmRlbmNpZXMgPSBbXQogICAgZGVwZW5kZW5jaWVzLmFwcGVuZCh7CiAgICAgICAgJ3BhdGgnOiAnZGV2aWNlL3p5Yi90Yjg3ODYwMV82NF9rNTEwX3dpZmknLAogICAgICAgICduYW1lJzogJ1dVTkVMRVoxMS9hbmRyb2lkX2RldmljZV96eWJfdGI4Nzg2MDFfNjRfa2U1MTBfd2lmaScsCiAgICAgICAgJ3JlbW90ZSc6ICdnaXRodWInLAogICAgICAgICdyZXZpc2lvbic6ICdtYWluJwp9KQogICAgZm9yIGRlcGVuZGVuY3kgaW4gZGVwZW5kZW5jaWVzOgogICAgICAgIGlmIG5vdCBpc3NpbmNpc3RhbmNlKGRlcGVuZGVuY3ksIGRpY3QpOgogICAgICAgICAgICAwcHJpbnQgKCJbd0FSSU5HTF0gU2tpcHBpbmcgaW52YWxpZCBkZXBlbmRlbmN5OiB7ZHBlbmRlbmN5fSIpCiAgICAgICAgICAgICBjb250aW51ZQogICAgICAgIGlmICdwYXRoJyBub3QgaW4gZGVwZW5kZW5jeTogCiAgICAgICAgICAgICAwcHJpbnQgKCJbd0FSSU5HTF0gRGVwZW5kZW5jeSBtaXNzaW5nICdwYXRoJyBrZXk6IHtkcGVuZGVuY3l9IikKICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgIGlmIG5vdCBpc19pbl9tYW5pZmVzdChkZXBlbmRlbmN5J3BhdGgnKTogCiAgICAgICAgICAgICAwcHJpbnQgKCJBZGRpbmcgZGVwZW5kZW5jeSB7ZGVwZW5kZW5jeSdwYXRoOH0iKQogICAgICAgICAgICAgICAgYWRkX3RvX21hbmlmZXN0KGRlcGVuZGVuY3ksIHJlcG9fcGF0aCkKICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAwcHJpbnQgKCJEZXBlbmRlbmN5IHtkcGVuZGVuY3kncGF0aH0gYWxyZWFkeSBpbiBtYW5pZmVzdCIpCgpkZWYgbWFpbigpOgogICAgcmVwb19wYXRoID0gb3MuZ2V0Y3dkKCkKICAgIGZldGNoX2RlcGVuZGVuY2llcyhyZXBvX3BhdGgpCgoKaWYgX19uYW1lX18gPT0gJ19tYWluJzoKICAgIG1haW4oKQo=" | base64 -d > vendor/twrp/build/tools/roomservice.py
           find . -name "*.mk" -type f -exec sed -i '/export PRODUCT_PROPERTY_OVERRIDES/d' {} \;
           find . -name "*.mk" -type f -exec sed -i 's/^PRODUCT_PROPERTY_OVERRIDES :=/PRODUCT_PROPERTY_OVERRIDES ?=/g' {} \;
           find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
-          
-          # 清理临时文件
           rm -rf .repo/.repo_cache ~/.repo/cache
 
-      - name: 编译TWRP镜像（更低并发+小缓存，适配内存限制）
+      - name: 编译TWRP镜像
         run: |
           cd $HOME/twrp
           which ccache && ccache --version
