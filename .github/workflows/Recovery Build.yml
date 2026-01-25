@@ -35,12 +35,11 @@ jobs:
           df -h
           echo "========================================"
 
-      - name: 安装依赖（修复--no-repo-verify参数错误）
+      - name: 安装依赖
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          # 关键修复：移除apt的--no-repo-verify参数（这个参数属于repo工具，不是apt）
           sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
           sudo apt clean
           git --version
@@ -56,12 +55,18 @@ jobs:
           cd /mnt/twrp
           echo $(pwd)
           echo "----------------------------------------"
-          # repo init保留--no-repo-verify（这是repo工具的合法参数）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           repo sync -j4 --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           echo "✅ 源码同步完成！"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          ls -l device/zyb/tb8786p1_64_k510_wifi/ || echo "设备树克隆失败！"
+          # 验证配置文件存在性
+          if [ -f "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk" ]; then
+            echo "✅ AndroidProducts.mk 配置文件存在"
+            cat device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk  # 打印配置确认
+          else
+            echo "❌ AndroidProducts.mk 配置文件不存在"
+            exit 1
+          fi
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?><manifest><project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" /></manifest>' > .repo/local_manifests/roomservice.xml
           sudo chmod +w vendor/twrp/build/tools/roomservice.py
@@ -71,7 +76,7 @@ jobs:
           find device/zyb/tb8786p1_64_k510_wifi -name "BoardConfig.mk" -type f -exec sed -i '/PLATFORM_VERSION_ALL_CODENAMES :=/d' {} \;
           echo "========================================"
 
-      - name: 编译镜像（强制实时输出）
+      - name: 编译镜像（适配你的AndroidProducts.mk配置）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
@@ -79,48 +84,68 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export BUILD_START_TIME=$(date +%s)
+          export LC_ALL=C  # 避免编码导致的交互问题
           
           echo "📋 编译前磁盘状态："
           df -h /mnt
           
-          # 强制加载环境+输出日志
-          echo "🔧 加载编译环境（强制输出）..."
-          source build/envsetup.sh 2>&1 | tee -a build.log
+          # 关键：加载环境并强制导出所有函数
+          echo "🔧 加载编译环境..."
+          source build/envsetup.sh
+          export -f lunch
+          export -f m
+          export -f make
           echo "✅ 环境加载完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
           
-          # 强制执行lunch+输出所有日志
-          echo "🔧 配置编译目标（强制输出）..."
-          (source build/envsetup.sh && lunch omni_tb8786p1_64_k510_wifi-eng) 2>&1 | tee -a build.log
-          if [ $? -ne 0 ]; then
-            echo "❌ lunch命令执行失败！"
+          # 关键：直接执行lunch，用echo跳过交互（强制选择目标）
+          echo "🔧 配置编译目标（omni_tb8786p1_64_k510_wifi-eng）..."
+          echo "" | bash -c "source build/envsetup.sh && lunch omni_tb8786p1_64_k510_wifi-eng" 2>&1 | tee -a lunch.log
+          if [ $? -eq 0 ]; then
+            echo "✅ 编译目标配置成功！"
+          else
+            echo "❌ 编译目标配置失败，日志："
+            cat lunch.log
             exit 1
           fi
           echo "✅ 编译目标配置完成（耗时：$(( $(date +%s) - BUILD_START_TIME ))s）"
           
-          # 心跳日志+编译（强制每10秒输出）
-          echo "🚀 开始编译（-j2，降低并发避免卡顿）- $(date)"
+          # 心跳日志（每10秒输出状态）
+          echo "🚀 开始编译（-j2）- $(date)"
           (
             while true; do
-              echo "❤️ 编译中（已运行$(( $(date +%s) - BUILD_START_TIME ))s）- 磁盘可用：$(df -h /mnt | grep /mnt | awk '{print $4}') - CPU负载：$(uptime | awk '{print $10 $11 $12}')"
+              ELAPSED=$(( $(date +%s) - BUILD_START_TIME ))
+              DISK=$(df -h /mnt | grep /mnt | awk '{print $4}')
+              CPU=$(uptime | awk '{print $10 $11 $12}')
+              echo "❤️ 编译中（已运行${ELAPSED}秒）- 磁盘可用：${DISK} - CPU负载：${CPU}"
               sleep 10
             done
           ) &
           HEARTBEAT_PID=$!
           
-          # 强制编译+实时输出所有日志
-          (source build/envsetup.sh && m -j2 vendor_bootimage bootimage) 2>&1 | tee -a build.log
-          if [ $? -ne 0 ]; then
-            echo "❌ 编译失败！"
-            kill $HEARTBEAT_PID
-            exit 1
-          fi
+          # 核心：使用m命令编译（适配TWRP体系）
+          bash -c "source build/envsetup.sh && m -j2 vendor_bootimage bootimage" 2>&1 | tee -a build.log
           
+          # 停止心跳日志
           kill $HEARTBEAT_PID
+          
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
           echo "⏱️  总耗时：$(( $(date +%s) - BUILD_START_TIME ))s"
-          ls -l out/target/product/tb8786p1_64_k510_wifi/
-          ls -l out/target/product/tb8786p1_64_k510_wifi/*.img || echo "⚠️  无镜像生成"
+          
+          # 检查产物
+          echo "📦 检查编译产物："
+          if [ -d "out/target/product/tb8786p1_64_k510_wifi" ]; then
+            ls -lh out/target/product/tb8786p1_64_k510_wifi/
+            # 检查是否生成镜像
+            if ls out/target/product/tb8786p1_64_k510_wifi/*.img 1> /dev/null 2>&1; then
+              echo "🎉 编译成功！生成的镜像文件："
+              ls -lh out/target/product/tb8786p1_64_k510_wifi/*.img
+            else
+              echo "⚠️  编译完成但未生成镜像文件"
+            fi
+          else
+            echo "❌ 产物目录不存在"
+          fi
           echo "========================================"
 
       - name: 上传产物
@@ -130,4 +155,5 @@ jobs:
           path: |
             /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
             /mnt/twrp/build.log
+            /mnt/twrp/lunch.log
           retention-days: 7
