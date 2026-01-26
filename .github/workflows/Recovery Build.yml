@@ -18,6 +18,7 @@ jobs:
           echo "GCC: $(gcc --version | head -1)"
           echo "Python3: $(python3 --version)"
           echo "Java: $(java --version 2>&1 | head -1)"
+          echo "Ninja: $(ninja --version)"
           echo "========================================"
 
       - name: Clean Disk
@@ -40,7 +41,7 @@ jobs:
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
+          sudo apt install -y --no-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
           sudo apt clean
           git --version
           python3 --version
@@ -97,7 +98,7 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（Ninja编译）
+      - name: Build vendor_boot.img（Ninja编译+强制清理）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
@@ -109,10 +110,11 @@ jobs:
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
           export NUM_JOBS=$(( $(nproc --all) / 2 ))
-          # 强制清理缓存（解决ninja无工作）
+          # 彻底清理缓存（解决ninja无工作+只读变量残留）
           make clean && make clobber
           rm -rf out/*
           rm -rf .repo/manifests/.repo
+          rm -rf device/zyb/tb8786p1_64_k510_wifi/*.bak
           # 加载环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
@@ -124,7 +126,7 @@ jobs:
             cat lunch.log
             exit 1
           fi
-          # 用Ninja编译（mka自动调用Ninja）
+          # 用Ninja编译（mka自动调用）
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
