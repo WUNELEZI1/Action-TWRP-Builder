@@ -40,11 +40,12 @@ jobs:
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo
+          sudo apt install -y --no-install-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
           sudo apt clean
           git --version
           python3 --version
           java -version
+          ninja --version
           echo "========================================"
 
       - name: Sync Source
@@ -60,7 +61,7 @@ jobs:
           if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
             rm -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
           fi
-          # 生成splash.xml解决警告
+          # 生成splash.xml
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/twres
           echo '<?xml version="1.0" encoding="UTF-8"?>' > device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
           echo '<splash />' >> device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
@@ -71,6 +72,7 @@ jobs:
             "device/zyb/tb8786p1_64_k510_wifi/BoardConfig.mk"
             "device/zyb/tb8786p1_64_k510_wifi/recovery.fstab"
             "device/zyb/tb8786p1_64_k510_wifi/twrp.mk"
+            "device/zyb/tb8786p1_64_k510_wifi/dynamic_partitions_opts.xml"
             "device/zyb/tb8786p1_64_k510_wifi/dtb/mt6768.dtb"
             "device/zyb/tb8786p1_64_k510_wifi/prebuilt/Image.gz-dtb"
           )
@@ -95,7 +97,7 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（修正只读变量）
+      - name: Build vendor_boot.img（Ninja编译）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
@@ -106,10 +108,11 @@ jobs:
           export LC_ALL=C
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
-          export NUM_JOBS=$(( $(nproc --all) / 2 ))  # 适配15.6GB内存
-          # 清理旧产物
+          export NUM_JOBS=$(( $(nproc --all) / 2 ))
+          # 强制清理缓存（解决ninja无工作）
           make clean && make clobber
-          rm -rf out/target/product/tb8786p1_64_k510_wifi/*
+          rm -rf out/*
+          rm -rf .repo/manifests/.repo
           # 加载环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
@@ -121,7 +124,7 @@ jobs:
             cat lunch.log
             exit 1
           fi
-          # 编译vendorbootimage
+          # 用Ninja编译（mka自动调用Ninja）
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
