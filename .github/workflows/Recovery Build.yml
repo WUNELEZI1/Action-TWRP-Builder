@@ -91,7 +91,7 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build TWRP
+      - name: Build vendor_boot.img（匹配解包格式）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
@@ -101,7 +101,7 @@ jobs:
           export LC_ALL=C
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
-          export NUM_JOBS=$(nproc --all)
+          export NUM_JOBS=$(( $(nproc --all) / 2 ))  # 适配15.6GB内存
           make clean && make clobber
           rm -rf out/target/product/tb8786p1_64_k510_wifi/*
           source build/envsetup.sh
@@ -113,6 +113,7 @@ jobs:
             cat lunch.log
             exit 1
           fi
+          # 编译vendorbootimage，匹配解包格式
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
@@ -120,8 +121,9 @@ jobs:
           if [ -d "$OUT_DIR" ]; then
             ls -lh $OUT_DIR/
             if [ -f "$OUT_DIR/vendor_boot.img" ]; then
-              echo "🎉 Build success!"
+              echo "🎉 Build success! vendor_boot.img generated"
               ls -lh $OUT_DIR/vendor_boot.img
+              # 验证镜像大小（适配0x4000000分区）
               IMG_SIZE=$(du -m "$OUT_DIR/vendor_boot.img" | awk '{print $1}')
               if [ $IMG_SIZE -le 64 ]; then
                 echo "✅ Image size OK (${IMG_SIZE}MB ≤ 64MB)"
@@ -130,7 +132,7 @@ jobs:
               fi
             else
               echo "⚠️ vendor_boot.img not found"
-              grep -E "error|failed|fatal" build.log
+              grep -E "error|failed|fatal|vendorbootimage" build.log
               tail -300 build.log
               exit 1
             fi
@@ -144,7 +146,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tb8786p1_64_k510_wifi-twrp
+          name: tb8786p1_64_k510_wifi-vendorboot
           path: |
             /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
             /mnt/twrp/build.log
