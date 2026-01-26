@@ -21,27 +21,40 @@ jobs:
           echo "Ninja: $(ninja --version)"
           echo "========================================"
 
-      - name: Clean Disk
+      - name: 深度清理磁盘（释放最大空间）
         run: |
           echo "========================================"
           df -h
           echo "----------------------------------------"
+          # 1. 删除系统冗余包
+          sudo apt purge -y --auto-remove dotnet* mono* llvm* android* ghc* powershell*
+          # 2. 清理缓存和日志
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
           sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
           sudo docker system prune -a -f --volumes
           sudo apt clean
-          sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/*
+          sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/*
+          # 3. 清理临时文件
+          sudo rm -rf /mnt/* /media/* /srv/*
           sudo swapoff -a && sudo swapon -a
+          # 4. 验证空间
           echo "----------------------------------------"
           df -h
+          TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed 's/G//')
+          if (( $(echo "$TOTAL_AVAIL < 40" | bc -l) )); then
+            echo "❌ 可用空间不足40GB，当前仅${TOTAL_AVAIL}GB"
+            exit 1
+          fi
+          echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
           echo "========================================"
 
-      - name: Install Dependencies
+      - name: Install Dependencies（仅安装必需依赖）
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
+          # 仅保留编译必需依赖，移除冗余依赖
+          sudo apt install -y git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool lzop make repo ninja-build
           sudo apt clean
           git --version
           python3 --version
@@ -49,14 +62,17 @@ jobs:
           ninja --version
           echo "========================================"
 
-      - name: Sync Source
+      - name: Sync Source（浅克隆+仅同步必需代码）
         run: |
           echo "========================================"
           sudo mkdir -p /mnt/twrp
           sudo chown -R runner:runner /mnt/twrp
           cd /mnt/twrp
+          # 浅克隆TWRP源码（仅拉取最新提交，不下载历史）
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
-          repo sync -j$(nproc --all) --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
+          # 同步时禁用冗余模块，仅保留核心模块
+          repo sync -j$(nproc --all) --no-clone-bundle --optimized-fetch --no-tags --current-branch 2>&1 | grep -v -E "new version of repo|launcher is not writable"
+          # 浅克隆设备树
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
           # 删除冲突文件
           if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
@@ -90,27 +106,21 @@ jobs:
               exit 1
             fi
           done
-          # 生成local_manifest
-          mkdir -p .repo/local_manifests
-          echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/tb8786p1_64_k510_wifi.xml
-          echo '<manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
-          echo '  <project path="device/zyb/tb8786p1_64_k510_wifi" name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi" remote="github" revision="main" />' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
-          echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（确保产物生成）
+      - name: Build vendor_boot.img（最小化编译+缓存优化）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
-          # 环境变量
+          # 环境变量（限制缓存大小+最小化编译）
           export ALLOW_MISSING_DEPENDENCIES=true
-          export ANDROID_JACK_VM_ARGS="-Xmx8g"
+          export ANDROID_JACK_VM_ARGS="-Xmx4g"  # 限制JVM内存，减少磁盘占用
           export LC_ALL=C
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
-          export NUM_JOBS=$(( $(nproc --all) / 2 ))
-          # 清理产物目录+编译缓存，确保重新生成
+          export NUM_JOBS=4  # 降低线程数，减少临时文件占用
+          # 清理旧产物（仅保留必需目录）
           rm -rf out/target/product/tb8786p1_64_k510_wifi
           rm -rf out/combined-*.ninja out/build-*.ninja
           # 加载环境
@@ -124,7 +134,7 @@ jobs:
             cat lunch.log
             exit 1
           fi
-          # 直接编译vendorbootimage（mka自动调用Ninja，无多余参数）
+          # 仅编译vendorbootimage，禁用其他镜像编译
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
@@ -159,7 +169,7 @@ jobs:
         with:
           name: tb8786p1_64_k510_wifi-vendorboot
           path: |
-            /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/*.img
+            /mnt/twrp/out/target/product/tb8786p1_64_k510_wifi/vendor_boot.img
             /mnt/twrp/build.log
             /mnt/twrp/lunch.log
           retention-days: 7
