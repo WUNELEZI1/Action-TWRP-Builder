@@ -5,7 +5,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 检查环境
+      - name: Check Env
         run: |
           echo "========================================"
           echo "📌 ENV INFO - $(date)"
@@ -20,7 +20,7 @@ jobs:
           echo "Java: $(java --version 2>&1 | head -1)"
           echo "========================================"
 
-      - name: 深度清理磁盘
+      - name: Clean Disk
         run: |
           echo "========================================"
           df -h
@@ -35,7 +35,7 @@ jobs:
           df -h
           echo "========================================"
 
-      - name: 安装依赖
+      - name: Install Dependencies
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
@@ -47,34 +47,21 @@ jobs:
           java -version
           echo "========================================"
 
-      - name: 同步源码
+      - name: Sync Source
         run: |
           echo "========================================"
           sudo mkdir -p /mnt/twrp
           sudo chown -R runner:runner /mnt/twrp
           cd /mnt/twrp
-          echo $(pwd)
-          echo "----------------------------------------"
-          # 初始化TWRP 12.1源码
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           repo sync -j$(nproc --all) --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
-          echo "✅ 源码同步完成！"
-          
-          # 克隆你的设备树仓库
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
-          
-          # 强制删除冲突的Android.mk（关键修复）
           if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
-            echo "❌ 删除冲突文件Android.mk"
             rm -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
           fi
-          
-          # 生成空的splash.xml，解决缺失警告
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/twres
           echo '<?xml version="1.0" encoding="UTF-8"?>' > device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
           echo '<splash />' >> device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
-          
-          # 验证核心文件存在性（包括你的dtb和内核）
           REQUIRED_FILES=(
             "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk"
             "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk"
@@ -86,20 +73,17 @@ jobs:
           )
           for file in "${REQUIRED_FILES[@]}"; do
             if [ -f "$file" ]; then
-              echo "✅ $file 存在"
-              # 验证文件大小（避免空文件）
+              echo "✅ $file exists"
               FILE_SIZE=$(du -k "$file" | awk '{print $1}')
               if [ $FILE_SIZE -lt 1 ]; then
-                echo "⚠️ $file 文件为空，编译可能失败！"
+                echo "⚠️ $file is empty"
                 exit 1
               fi
             else
-              echo "❌ $file 缺失，编译终止！"
+              echo "❌ $file missing"
               exit 1
             fi
           done
-          
-          # 生成local_manifest
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo '<manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
@@ -107,75 +91,57 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: 编译镜像（修复所有已知问题）
+      - name: Build TWRP
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
-          # 关键环境变量配置
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export LC_ALL=C
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
           export NUM_JOBS=$(nproc --all)
-          
-          echo "📋 编译前磁盘状态："
-          df -h /mnt
-          
-          # 彻底清理旧产物
           make clean && make clobber
           rm -rf out/target/product/tb8786p1_64_k510_wifi/*
-          
-          # 加载编译环境
           source build/envsetup.sh
-          echo "✅ 环境加载完成，执行lunch..."
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
-          
-          # 验证设备树加载成功
           if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log && grep -q "TARGET_ARCH=arm64" lunch.log; then
-            echo "✅ 设备树加载成功"
+            echo "✅ lunch success"
           else
-            echo "❌ 设备树加载失败"
+            echo "❌ lunch failed"
             cat lunch.log
             exit 1
           fi
-          
-          echo "🚀 开始编译TWRP（使用正确目标vendorbootimage）..."
-          # 核心修复：使用正确的编译目标
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
-          
-          # 验证编译产物
           OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
           if [ -d "$OUT_DIR" ]; then
             ls -lh $OUT_DIR/
-            # 检查核心产物
             if [ -f "$OUT_DIR/vendor_boot.img" ]; then
-              echo "🎉 编译成功！生成TWRP镜像：vendor_boot.img"
+              echo "🎉 Build success!"
               ls -lh $OUT_DIR/vendor_boot.img
-              # 验证镜像大小
               IMG_SIZE=$(du -m "$OUT_DIR/vendor_boot.img" | awk '{print $1}')
               if [ $IMG_SIZE -le 64 ]; then
-                echo "✅ 镜像大小合规（${IMG_SIZE}MB ≤ 64MB）"
+                echo "✅ Image size OK (${IMG_SIZE}MB ≤ 64MB)"
               else
-                echo "⚠️  镜像大小超标（${IMG_SIZE}MB > 64MB），但仍可尝试使用"
+                echo "⚠️ Image size too big (${IMG_SIZE}MB > 64MB)"
               fi
             else
-              echo "⚠️  未生成vendor_boot.img，打印错误日志..."
+              echo "⚠️ vendor_boot.img not found"
               grep -E "error|failed|fatal" build.log
               tail -300 build.log
               exit 1
             fi
           else
-            echo "❌ 产物目录不存在"
+            echo "❌ Out dir missing"
             tail -300 build.log
             exit 1
           fi
           echo "========================================"
 
-      - name: 上传产物+日志
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: tb8786p1_64_k510_wifi-twrp
