@@ -95,7 +95,7 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（修正指纹+版本）
+      - name: Build vendor_boot.img（修正只读变量）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
