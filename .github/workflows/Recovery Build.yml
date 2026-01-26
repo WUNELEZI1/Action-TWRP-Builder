@@ -36,16 +36,17 @@ jobs:
           df -h
           echo "========================================"
 
-      - name: Install Dependencies
+      - name: Install Dependencies（修复apt参数冲突）
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          sudo apt install -y --no-recommends git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
+          # 移除--no-recommends参数，解决命令冲突
+          sudo apt install -y git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
           sudo apt clean
           git --version
           python3 --version
-          java -version
+          java --version
           ninja --version
           echo "========================================"
 
