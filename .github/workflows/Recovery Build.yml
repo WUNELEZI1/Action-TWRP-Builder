@@ -56,12 +56,15 @@ jobs:
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           repo sync -j$(nproc --all) --no-clone-bundle --optimized-fetch --no-tags 2>&1 | grep -v -E "new version of repo|launcher is not writable"
           git clone --depth=1 https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi device/zyb/tb8786p1_64_k510_wifi
+          # 删除冲突文件
           if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
             rm -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
           fi
+          # 生成splash.xml解决警告
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/twres
           echo '<?xml version="1.0" encoding="UTF-8"?>' > device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
           echo '<splash />' >> device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
+          # 验证核心文件
           REQUIRED_FILES=(
             "device/zyb/tb8786p1_64_k510_wifi/AndroidProducts.mk"
             "device/zyb/tb8786p1_64_k510_wifi/omni_tb8786p1_64_k510_wifi.mk"
@@ -84,6 +87,7 @@ jobs:
               exit 1
             fi
           done
+          # 生成local_manifest
           mkdir -p .repo/local_manifests
           echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo '<manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
@@ -91,21 +95,25 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（匹配解包格式）
+      - name: Build vendor_boot.img（修正指纹+版本）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
           cd /mnt/twrp
+          # 环境变量
           export ALLOW_MISSING_DEPENDENCIES=true
           export ANDROID_JACK_VM_ARGS="-Xmx8g"
           export LC_ALL=C
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
           export NUM_JOBS=$(( $(nproc --all) / 2 ))  # 适配15.6GB内存
+          # 清理旧产物
           make clean && make clobber
           rm -rf out/target/product/tb8786p1_64_k510_wifi/*
+          # 加载环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
+          # 验证加载
           if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log && grep -q "TARGET_ARCH=arm64" lunch.log; then
             echo "✅ lunch success"
           else
@@ -113,17 +121,17 @@ jobs:
             cat lunch.log
             exit 1
           fi
-          # 编译vendorbootimage，匹配解包格式
+          # 编译vendorbootimage
           mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
+          # 验证产物
           OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
           if [ -d "$OUT_DIR" ]; then
             ls -lh $OUT_DIR/
             if [ -f "$OUT_DIR/vendor_boot.img" ]; then
               echo "🎉 Build success! vendor_boot.img generated"
               ls -lh $OUT_DIR/vendor_boot.img
-              # 验证镜像大小（适配0x4000000分区）
               IMG_SIZE=$(du -m "$OUT_DIR/vendor_boot.img" | awk '{print $1}')
               if [ $IMG_SIZE -le 64 ]; then
                 echo "✅ Image size OK (${IMG_SIZE}MB ≤ 64MB)"
