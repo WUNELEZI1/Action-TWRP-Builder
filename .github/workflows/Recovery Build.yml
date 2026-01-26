@@ -36,12 +36,11 @@ jobs:
           df -h
           echo "========================================"
 
-      - name: Install Dependencies（修复apt参数冲突）
+      - name: Install Dependencies
         run: |
           echo "========================================"
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
-          # 移除--no-recommends参数，解决命令冲突
           sudo apt install -y git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool imagemagick lzop make repo ninja-build
           sudo apt clean
           git --version
@@ -63,7 +62,7 @@ jobs:
           if [ -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk" ]; then
             rm -f "device/zyb/tb8786p1_64_k510_wifi/Android.mk"
           fi
-          # 生成splash.xml
+          # 生成splash.xml解决警告
           mkdir -p device/zyb/tb8786p1_64_k510_wifi/twres
           echo '<?xml version="1.0" encoding="UTF-8"?>' > device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
           echo '<splash />' >> device/zyb/tb8786p1_64_k510_wifi/twres/splash.xml
@@ -99,7 +98,7 @@ jobs:
           echo '</manifest>' >> .repo/local_manifests/tb8786p1_64_k510_wifi.xml
           echo "========================================"
 
-      - name: Build vendor_boot.img（Ninja编译+强制清理）
+      - name: Build vendor_boot.img（跳过缓存+强制编译）
         run: |
           echo "========================================"
           echo "🔨 BUILD START - $(date)"
@@ -111,11 +110,9 @@ jobs:
           export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
           export TARGET_DEVICE=tb8786p1_64_k510_wifi
           export NUM_JOBS=$(( $(nproc --all) / 2 ))
-          # 彻底清理缓存（解决ninja无工作+只读变量残留）
-          make clean && make clobber
-          rm -rf out/*
-          rm -rf .repo/manifests/.repo
-          rm -rf device/zyb/tb8786p1_64_k510_wifi/*.bak
+          # 跳过缓存：直接删除默认生成的ninja文件，强制重新生成
+          rm -rf out/combined-*.ninja out/build-*.ninja
+          rm -rf out/target/product/tb8786p1_64_k510_wifi/*
           # 加载环境
           source build/envsetup.sh
           lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee -a lunch.log
@@ -127,8 +124,8 @@ jobs:
             cat lunch.log
             exit 1
           fi
-          # 用Ninja编译（mka自动调用）
-          mka vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build.log
+          # 强制编译vendorbootimage（忽略ninja缓存判定）
+          mka vendorbootimage -j$NUM_JOBS --force 2>&1 | tee -a build.log
           echo "----------------------------------------"
           echo "✅ BUILD END - $(date)"
           # 验证产物
