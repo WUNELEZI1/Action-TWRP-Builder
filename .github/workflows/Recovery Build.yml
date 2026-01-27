@@ -2,181 +2,212 @@ name: TWRP Build for tb8786p1_64_k510_wifi (Vendor Boot Ramdisk)
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
+    
     steps:
-      - name: Checkout Device Tree
-        uses: actions/checkout@v4
-        with:
-          path: device/zyb/tb8786p1_64_k510_wifi
+    - name: Checkout Device Tree
+      uses: actions/checkout@v4
+      with:
+        path: device/zyb/tb8786p1_64_k510_wifi
 
-      - name: Install Dependencies
-        run: |
-          echo "========================================"
-          echo "🔧 Installing build dependencies..."
-          sudo apt update -y
-          sudo apt install -y bc git-core python3 openjdk-11-jdk-headless \
-            gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
-            liblz4-tool lzop make repo ninja-build curl unzip \
-            libssl-dev libxml2-utils xsltproc zip
-          sudo apt clean
-          echo "✅ Dependencies installed"
-          echo "========================================"
+    - name: Check Environment
+      run: |
+        echo "========================================"
+        echo "📌 ENVIRONMENT INFO - $(date)"
+        echo "========================================"
+        cat /etc/os-release
+        uname -a
+        lscpu | grep -E "Model name|CPU\(s\)"
+        free -h
+        df -h --total | grep -E "Filesystem|total"
+        echo "GCC: $(gcc --version | head -1)"
+        echo "Python3: $(python3 --version)"
+        echo "Java: $(java --version 2>&1 | head -1)"
+        echo "Ninja: $(ninja --version)"
+        echo "========================================"
 
-      - name: Setup Build Environment
-        run: |
-          echo "========================================"
-          echo "🔧 Setting up build environment..."
-          mkdir -p ~/twrp-build
-          cd ~/twrp-build
-          
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export LC_ALL=C
-          export USE_CCACHE=1
-          export CCACHE_DIR=~/ccache
-          
-          mkdir -p $CCACHE_DIR
-          ccache -M 10G
-          
-          echo "✅ Environment setup completed"
-          echo "========================================"
+    - name: Install Build Dependencies
+      run: |
+        echo "========================================"
+        echo "🔧 Installing build dependencies..."
+        sudo apt update -y
+        sudo apt install -y bc git-core python3 openjdk-11-jdk-headless \
+          gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
+          liblz4-tool lzop make repo ninja-build curl unzip \
+          libssl-dev libxml2-utils xsltproc zip \
+          libncurses5 libncursesw5 libc6-dev-i386 \
+          dos2unix rsync imagemagick
+        sudo apt clean
+        echo "✅ Dependencies installed"
+        echo "========================================"
 
-      - name: Sync TWRP Source
-        run: |
-          echo "========================================"
-          echo "📥 Syncing TWRP source code..."
-          cd ~/twrp-build
-          
-          repo init --depth=1 \
-            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
-            -b twrp-12.1 \
-            --no-repo-verify
-          
-          # 最小化同步
-          repo sync -j$(nproc) \
-            --no-clone-bundle \
-            --no-tags \
-            --optimized-fetch \
-            -c \
-            bootable/recovery \
-            build/make \
-            system/core
-          
-          echo "✅ Source sync completed"
-          echo "========================================"
+    - name: Setup Build Environment
+      run: |
+        echo "========================================"
+        echo "🔧 Setting up build environment..."
+        mkdir -p ~/twrp-build
+        cd ~/twrp-build
+        
+        # 核心环境变量（仅保留必要项）
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export LC_ALL=C
+        export USE_CCACHE=1
+        export CCACHE_DIR=~/ccache
+        export TW_DEVICE_VERSION=3.7.0-zyb
+        
+        # 设置ccache加速构建
+        mkdir -p $CCACHE_DIR
+        ccache -M 10G
+        ccache -s
+        
+        echo "✅ Environment setup completed"
+        echo "========================================"
 
-      - name: Copy Device Tree
-        run: |
-          echo "========================================"
-          echo "📂 Copying device tree..."
-          cd ~/twrp-build
-          
-          mkdir -p device/zyb
-          cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
-          
-          echo "✅ Device tree copied"
-          echo "========================================"
+    - name: Sync Minimal TWRP Source
+      run: |
+        echo "========================================"
+        echo "📥 Syncing minimal TWRP source code..."
+        cd ~/twrp-build
+        
+        # 初始化TWRP 12.1源码
+        repo init --depth=1 \
+          -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
+          -b twrp-12.1 \
+          --no-repo-verify
+        
+        # 最小化同步（仅核心仓库）
+        repo sync -j$(nproc --all) \
+          --no-clone-bundle \
+          --no-tags \
+          --optimized-fetch \
+          --current-branch \
+          --force-sync \
+          -c \
+          --prune
+        
+        echo "✅ Source sync completed"
+        echo "========================================"
 
-      - name: Create UI Config File
-        # 单独拆分步骤，彻底避开 YAML 多行字符串解析问题
-        run: |
-          echo "========================================"
-          echo "🎨 Creating TWRP UI config..."
-          cd ~/twrp-build
-          
-          # 创建必要的目录
-          mkdir -p bootable/recovery/gui/theme/portrait_mdpi
-          
-          # 使用 echo 逐行写入，避免 EOF 解析冲突
-          echo '<?xml version="1.0"?>' > bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '<recovery>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '  <variables>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '    <themeversion>3</themeversion>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '    <tw_screen_width>1200</tw_screen_width>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '    <tw_screen_height>1920</tw_screen_height>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '  </variables>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          echo '</recovery>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
-          
-          echo "✅ UI config created"
-          echo "========================================"
+    - name: Copy Device Tree (Your Complete Files)
+      run: |
+        echo "========================================"
+        echo "📂 Copying your complete device tree..."
+        cd ~/twrp-build
+        
+        # 创建设备目录并复制你所有的设备树文件
+        mkdir -p device/zyb
+        cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
+        
+        # 仅做必要的换行符修复（避免Windows格式问题）
+        find device/zyb/tb8786p1_64_k510_wifi -name "*.mk" -exec dos2unix {} \;
+        
+        echo "✅ Your device tree copied (all files preserved)"
+        echo "========================================"
 
-      - name: Prepare Build
-        run: |
-          echo "========================================"
-          echo "⚙️ Preparing build..."
-          cd ~/twrp-build
-          
-          source build/envsetup.sh
-          lunch omni_tb8786p1_64_k510_wifi-eng
-          
-          echo "✅ Build prepared"
-          echo "========================================"
+    - name: Prepare Build Configuration
+      run: |
+        echo "========================================"
+        echo "⚙️ Preparing build configuration..."
+        cd ~/twrp-build
+        
+        # 配置构建环境
+        source build/envsetup.sh
+        
+        # 强制设置产品变量（匹配你的设备树）
+        export TARGET_DEVICE=tb8786p1_64_k510_wifi
+        export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
+        
+        # 执行lunch选择设备
+        lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
+        
+        echo "📊 Build variables:"
+        echo "TARGET_PRODUCT: $TARGET_PRODUCT"
+        echo "TARGET_DEVICE: $TARGET_DEVICE"
+        
+        echo "✅ Build configuration prepared"
+        echo "========================================"
 
-      - name: Build Ramdisk
-        run: |
-          echo "========================================"
-          echo "🔨 Building recovery ramdisk..."
-          echo "========================================"
-          
-          cd ~/twrp-build
-          
-          # 关键：构建recoveryimage（会生成ramdisk）
-          make -j$(nproc) recoveryimage 2>&1 | tee build.log
-          
-          echo "✅ Build attempted"
-          echo "========================================"
+    - name: Build Vendor Boot Recovery Ramdisk
+      run: |
+        echo "========================================"
+        echo "🔨 BUILDING VENDOR_BOOT RECOVERY RAMDISK - $(date)"
+        echo "========================================"
+        
+        cd ~/twrp-build
+        export NUM_JOBS=$(nproc)
+        
+        # 核心构建命令：构建recoveryimage（适配vendor_boot的ramdisk）
+        make -j$NUM_JOBS recoveryimage 2>&1 | tee build.log
+        
+        # 检查构建状态
+        BUILD_STATUS=${PIPESTATUS[0]}
+        
+        if [ $BUILD_STATUS -ne 0 ]; then
+          echo "❌ Build failed! Showing error details:"
+          grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -20
+          tail -50 build.log
+          exit 1
+        fi
+        
+        echo "✅ Build successful at $(date)"
+        echo "========================================"
 
-      - name: Collect Artifacts
-        run: |
-          echo "========================================"
-          echo "📦 Collecting artifacts..."
-          echo "========================================"
-          
-          cd ~/twrp-build
-          OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
-          
-          mkdir -p artifacts
-          
-          # 查找所有可能的ramdisk文件
-          find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
-            echo "📄 Found: $file"
-            cp "$file" artifacts/
-          done
-          
-          # 检查是否有recovery目录
-          if [ -d "$OUT_DIR/recovery" ]; then
-            echo "📁 Found recovery directory"
-            ls -la $OUT_DIR/recovery/
-            
-            # 尝试从recovery目录创建ramdisk
-            if [ -d "$OUT_DIR/recovery/root" ]; then
-              (cd $OUT_DIR/recovery/root && find . | cpio -o -H newc | gzip > ~/twrp-build/artifacts/ramdisk-recovery.cpio.gz)
-            fi
-          fi
-          
-          # 如果没有找到任何文件，输出调试信息
-          if [ -z "$(ls artifacts/*.cpio* 2>/dev/null)" ]; then
-            echo "⚠️ No ramdisk files found"
-            echo "=== DEBUG INFO ==="
-            ls -la $OUT_DIR/
-            find $OUT_DIR -type f -name "*.img" -o -name "*.cpio*" 2>/dev/null
-          fi
-          
-          cp build.log artifacts/
-          
-          echo "✅ Artifacts collected"
-          echo "========================================"
+    - name: Collect Ramdisk Artifacts
+      run: |
+        echo "========================================"
+        echo "📦 Collecting ramdisk artifacts..."
+        echo "========================================"
+        
+        cd ~/twrp-build
+        OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
+        mkdir -p artifacts
+        
+        # 收集所有ramdisk相关文件（核心产物）
+        find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
+          echo "🎯 Found ramdisk file: $file"
+          cp "$file" artifacts/
+        done
+        
+        # 收集构建日志用于调试
+        cp build.log artifacts/
+        cp lunch.log artifacts/
+        
+        # 显示收集到的文件
+        echo "📊 Collected artifacts:"
+        ls -lh artifacts/
+        
+        echo "✅ Artifact collection completed"
+        echo "========================================"
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: twrp-ramdisk
-          path: ~/twrp-build/artifacts/*
-          retention-days: 30
+    - name: Upload Ramdisk Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-vendor-boot-ramdisk
+        path: ~/twrp-build/artifacts/*
+        retention-days: 30
+
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "========================================"
+        echo "📊 BUILD SUMMARY - $(date)"
+        echo "========================================"
+        echo "Status: ${{ job.status }}"
+        echo "Device: tb8786p1_64_k510_wifi (ZYB ZPD1321)"
+        echo "Target: vendor_boot:recovery"
+        
+        if [ -d ~/twrp-build/artifacts ]; then
+          echo "Generated artifacts:"
+          ls -la ~/twrp-build/artifacts/
+        fi
+        
+        echo "========================================"
+        echo "Flash command (for your device):"
+        echo "fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
