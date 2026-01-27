@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     
     steps:
     - name: Checkout Device Tree
@@ -33,28 +33,29 @@ jobs:
         sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
         sudo swapoff -a && sudo swapon -a
         sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
-        # 验证空间
+        # 验证空间（使用du替代bc，避免依赖缺失）
         echo "----------------------------------------"
         df -h
         TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed 's/G//')
-        if (( $(echo "$TOTAL_AVAIL < 40" | bc -l) )); then
+        if ! echo "$TOTAL_AVAIL >= 40" | awk '{exit !($1 >= $2)}'; then
           echo "❌ 可用空间不足40GB，当前仅${TOTAL_AVAIL}GB"
           exit 1
         fi
         echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
         echo "========================================"
 
-    - name: Install Minimal Build Dependencies
+    - name: Install Full Build Dependencies
       run: |
         echo "========================================"
-        echo "🔧 Installing minimal dependencies..."
+        echo "🔧 Installing full dependencies..."
         sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
         sudo apt update -y -qq
         sudo apt install -y -qq \
           git python3 openjdk-11-jdk-headless \
           gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
           liblz4-tool lzop make repo ninja-build curl unzip \
-          dos2unix rsync
+          dos2unix rsync bc libxml2-utils xsltproc zip \
+          libncurses5 libncursesw5 libc6-dev-i386
         sudo apt clean
         echo "✅ Dependencies installed"
         echo "========================================"
@@ -73,23 +74,23 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Minimal TWRP Source + 设备树（修复仓库地址）
+    - name: Sync Full TWRP Source + 设备树（补充完整依赖）
       run: |
         echo "========================================"
-        echo "📥 Syncing minimal TWRP source + device tree..."
+        echo "📥 Syncing full TWRP source + device tree..."
         cd ~/twrp-build
         
-        # 初始化源码
+        # 初始化完整TWRP源码（而非minimal，确保依赖齐全）
         repo init --depth=1 \
-          -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
+          -u https://github.com/TeamWin/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 复制你的设备树到正确路径（本地已检出，直接复制，无需从远程拉取）
+        # 复制你的设备树到正确路径
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 生成roomservice.xml（不指定远程，直接使用本地复制的设备树）
+        # 生成roomservice.xml（指定本地设备树，避免远程拉取）
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
@@ -97,26 +98,23 @@ jobs:
         echo '           name="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
         echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
+        echo '  <!-- 补充TWRP必需依赖仓库 -->' >> .repo/local_manifests/roomservice.xml
+        echo '  <project path="vendor/twrp" ' >> .repo/local_manifests/roomservice.xml
+        echo '           name="TeamWin/android_vendor_twrp" ' >> .repo/local_manifests/roomservice.xml
+        echo '           remote="github" ' >> .repo/local_manifests/roomservice.xml
+        echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 最小化同步TWRP核心源码（跳过设备树远程拉取）
+        # 同步完整源码（包含vendor/twrp依赖）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
           --optimized-fetch \
           --current-branch \
           -c \
-          --prune \
-          bootable/recovery \
-          build/make \
-          build/soong \
-          system/core \
-          system/vold \
-          external/mksh \
-          external/selinux \
-          external/zlib
+          --prune
         
-        echo "✅ Minimal source + device tree sync completed"
+        echo "✅ Full source + device tree sync completed"
         echo "========================================"
 
     - name: Prepare Build Configuration
@@ -125,19 +123,29 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
+        # 加载完整envsetup.sh（包含vendor/twrp依赖）
         source build/envsetup.sh
+        
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
         # 执行lunch
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
         
-        # 验证设备树识别
+        # 验证设备树和依赖识别
         if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
           echo "✅ Device tree recognized successfully"
         else
           echo "❌ Device tree not found! Checking path..."
           ls -la device/zyb/
+          exit 1
+        fi
+        
+        if [ -f "vendor/twrp/build/envsetup.sh" ]; then
+          echo "✅ TWRP vendor dependencies found"
+        else
+          echo "❌ TWRP vendor dependencies missing!"
+          ls -la vendor/twrp/
           exit 1
         fi
         
@@ -156,14 +164,14 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 使用m命令构建recoveryimage（适配Android 12.1）
-        m recoveryimage -j$(nproc) 2>&1 | tee build.log
+        # 使用m命令构建（适配Android 12.1，指定-j4避免资源耗尽）
+        m recoveryimage -j4 2>&1 | tee build.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
         if [ $BUILD_STATUS -ne 0 ]; then
           echo "❌ Build failed! Showing error details:"
-          grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -20
-          tail -50 build.log
+          grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -30
+          tail -100 build.log
           exit 1
         fi
         
@@ -178,13 +186,14 @@ jobs:
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
-        # 收集所有ramdisk相关文件（适配vendor_boot:recovery）
+        # 收集vendor_boot:recovery所需的ramdisk文件
         find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
           echo "🎯 Found ramdisk file: $file"
           cp "$file" artifacts/
         done
         
-        # 收集日志
+        # 收集编译产物和日志
+        cp $OUT_DIR/recovery.img artifacts/ 2>/dev/null || true
         cp build.log artifacts/
         cp lunch.log artifacts/
         
@@ -210,3 +219,5 @@ jobs:
         echo "Target: vendor_boot:recovery"
         echo "Flash command:"
         echo "fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
+        echo "或（备用）:"
+        echo "fastboot flash vendor_boot_a <ramdisk-file>.cpio.gz"
