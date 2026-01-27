@@ -55,14 +55,12 @@ jobs:
         mkdir -p ~/twrp-build
         cd ~/twrp-build
         
-        # 核心环境变量（仅保留必要项）
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
         export USE_CCACHE=1
         export CCACHE_DIR=~/ccache
         export TW_DEVICE_VERSION=3.7.0-zyb
         
-        # 设置ccache加速构建
         mkdir -p $CCACHE_DIR
         ccache -M 10G
         ccache -s
@@ -76,13 +74,11 @@ jobs:
         echo "📥 Syncing minimal TWRP source code..."
         cd ~/twrp-build
         
-        # 初始化TWRP 12.1源码
         repo init --depth=1 \
           -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 最小化同步（仅核心仓库）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -101,11 +97,9 @@ jobs:
         echo "📂 Copying your complete device tree..."
         cd ~/twrp-build
         
-        # 创建设备目录并复制你所有的设备树文件
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 仅做必要的换行符修复（避免Windows格式问题）
         find device/zyb/tb8786p1_64_k510_wifi -name "*.mk" -exec dos2unix {} \;
         
         echo "✅ Your device tree copied (all files preserved)"
@@ -117,14 +111,11 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
-        # 配置构建环境
         source build/envsetup.sh
         
-        # 强制设置产品变量（匹配你的设备树）
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
-        # 执行lunch选择设备
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
         
         echo "📊 Build variables:"
@@ -143,10 +134,8 @@ jobs:
         cd ~/twrp-build
         export NUM_JOBS=$(nproc)
         
-        # 核心构建命令：构建recoveryimage（适配vendor_boot的ramdisk）
         make -j$NUM_JOBS recoveryimage 2>&1 | tee build.log
         
-        # 检查构建状态
         BUILD_STATUS=${PIPESTATUS[0]}
         
         if [ $BUILD_STATUS -ne 0 ]; then
@@ -169,17 +158,14 @@ jobs:
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
-        # 收集所有ramdisk相关文件（核心产物）
         find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
           echo "🎯 Found ramdisk file: $file"
           cp "$file" artifacts/
         done
         
-        # 收集构建日志用于调试
         cp build.log artifacts/
         cp lunch.log artifacts/
         
-        # 显示收集到的文件
         echo "📊 Collected artifacts:"
         ls -lh artifacts/
         
