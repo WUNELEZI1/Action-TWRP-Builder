@@ -62,13 +62,13 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync TWRP Source + Configure Device Tree
+    - name: Sync TWRP Source + Configure Device Tree（修复repo冲突）
       run: |
         echo "========================================"
         echo "📥 Syncing TWRP source + configuring device tree..."
         cd ~/twrp-build
         
-        # 初始化源码
+        # 初始化源码（指定默认remote，避免冲突）
         repo init --depth=1 \
           -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
@@ -78,25 +78,22 @@ jobs:
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 生成roomservice.xml（避免heredoc的YAML解析问题）
+        # 生成roomservice.xml（不重复定义github remote，避免冲突）
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
-        echo '  <remote name="github" fetch="https://github.com/" />' >> .repo/local_manifests/roomservice.xml
         echo '  <project path="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
         echo '           name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
-        echo '           remote="github"' >> .repo/local_manifests/roomservice.xml
         echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步源码
+        # 同步源码（移除--force-sync，避免覆盖冲突）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
           --optimized-fetch \
           --current-branch \
-          --force-sync \
           -c \
           --prune
         
