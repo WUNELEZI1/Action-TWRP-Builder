@@ -45,13 +45,13 @@ jobs:
         echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
         echo "========================================"
 
-    - name: Install Full Build Dependencies（剔除无效包，依赖完整）
+    - name: Install Full Build Dependencies（依赖完整）
       run: |
         echo "========================================"
         echo "🔧 Installing full dependencies..."
         sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
         sudo apt update -y -qq
-        # 剔除不存在的android-sdk-platform-tools-base，保留必需依赖
+        # 剔除无效包，保留必需依赖
         sudo apt install -y -qq \
           git python3 openjdk-11-jdk-headless \
           gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
@@ -88,21 +88,30 @@ jobs:
         export BOARD_DTB_SIZE=159397  # DTB大小（MTKClient解包数据）
         export BOARD_DYNAMIC_PARTITIONS=true  # 动态分区开启
         export BOOTLOADER_DEVICE_NAME=tb8786p1_64_k510_wifi  # 设备名称
+        export TWRP_MANIFEST_URL="https://github.com/TeamWin/platform_manifest_twrp_aosp"
+        export TWRP_MANIFEST_BRANCH="twrp-12.1"
         
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Full TWRP Source + 设备树（依赖同步完整）
+    - name: Sync Full TWRP Source + 设备树（无认证同步方案）
       run: |
         echo "========================================"
         echo "📥 Syncing full TWRP source + device tree..."
         cd ~/twrp-build
         
-        # 初始化完整TWRP源码（适配Android 13/SDK 33）
+        # 配置git无认证同步（避免交互式凭据请求）
+        git config --global credential.helper store
+        echo "https://github.com" > ~/.git-credentials
+        git config --global url."https://github.com/".insteadOf git@github.com:
+        git config --global url."https://".insteadOf git://
+        
+        # 初始化TWRP源码（使用HTTPS而非SSH，无需认证）
         repo init --depth=1 \
           -u https://github.com/TeamWin/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
-          --no-repo-verify
+          --no-repo-verify \
+          --config-name
         
         # 复制设备树并修复权限
         mkdir -p device/zyb
@@ -127,7 +136,7 @@ jobs:
         echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步源码（稳定参数避免超时）
+        # 同步源码（添加超时重试，避免网络问题）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -135,12 +144,14 @@ jobs:
           --current-branch \
           -c \
           --prune \
-          --force-sync
+          --force-sync \
+          --retry 3 \
+          --timeout 300
         
         echo "✅ Full source + device tree sync completed"
         echo "========================================"
 
-    - name: Prepare Build Configuration（设备树验证通过）
+    - name: Prepare Build Configuration（设备树验证）
       run: |
         echo "========================================"
         echo "⚙️ Preparing build configuration..."
