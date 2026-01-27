@@ -55,15 +55,10 @@ jobs:
         mkdir -p ~/twrp-build
         cd ~/twrp-build
         
+        # 移除ccache相关配置，适配一次性构建
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
-        export USE_CCACHE=1
-        export CCACHE_DIR=~/ccache
         export TW_DEVICE_VERSION=3.7.0-zyb
-        
-        mkdir -p $CCACHE_DIR
-        ccache -M 10G
-        ccache -s
         
         echo "✅ Environment setup completed"
         echo "========================================"
