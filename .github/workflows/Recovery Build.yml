@@ -23,19 +23,17 @@ jobs:
         echo "🗑️ Deep cleaning disk space..."
         df -h
         echo "----------------------------------------"
-        # 1. 删除系统冗余包和缓存
+        # 删除系统冗余包和缓存
         sudo apt purge -y --auto-remove -qq \
           dotnet* mono* llvm* android* ghc* powershell* \
           libreoffice* thunderbird* firefox* chrome* \
           docker* lxd* snapd*
-        # 2. 清理日志和临时文件
         sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/*
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
         sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
-        # 3. 清理swap和冗余目录
         sudo swapoff -a && sudo swapon -a
         sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
-        # 4. 验证空间（确保可用≥40GB）
+        # 验证空间
         echo "----------------------------------------"
         df -h
         TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed 's/G//')
@@ -52,7 +50,6 @@ jobs:
         echo "🔧 Installing minimal dependencies..."
         sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
         sudo apt update -y -qq
-        # 仅安装编译必需依赖，避免冗余
         sudo apt install -y -qq \
           git python3 openjdk-11-jdk-headless \
           gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
@@ -76,33 +73,33 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Minimal TWRP Source（最小化同步，节省空间）
+    - name: Sync Minimal TWRP Source + 设备树（修复仓库地址）
       run: |
         echo "========================================"
-        echo "📥 Syncing minimal TWRP source..."
+        echo "📥 Syncing minimal TWRP source + device tree..."
         cd ~/twrp-build
         
-        # 初始化源码（仅同步核心仓库，跳过冗余）
+        # 初始化源码
         repo init --depth=1 \
           -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 复制你的设备树到正确路径
+        # 复制你的设备树到正确路径（本地已检出，直接复制，无需从远程拉取）
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 生成roomservice.xml（无重复remote配置）
+        # 生成roomservice.xml（不指定远程，直接使用本地复制的设备树）
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
         echo '  <project path="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
-        echo '           name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
+        echo '           name="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
         echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 最小化同步（仅核心仓库，避免下载冗余依赖）
+        # 最小化同步TWRP核心源码（跳过设备树远程拉取）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -117,10 +114,9 @@ jobs:
           system/vold \
           external/mksh \
           external/selinux \
-          external/zlib \
-          device/zyb/tb8786p1_64_k510_wifi
+          external/zlib
         
-        echo "✅ Minimal source sync completed"
+        echo "✅ Minimal source + device tree sync completed"
         echo "========================================"
 
     - name: Prepare Build Configuration
@@ -160,7 +156,7 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 最小化编译（仅构建recoveryimage，节省空间）
+        # 使用m命令构建recoveryimage（适配Android 12.1）
         m recoveryimage -j$(nproc) 2>&1 | tee build.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
