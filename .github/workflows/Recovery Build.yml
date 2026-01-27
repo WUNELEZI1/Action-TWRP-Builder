@@ -17,13 +17,13 @@ jobs:
       with:
         path: device/zyb/tb8786p1_64_k510_wifi
 
-    - name: 深度清理磁盘（彻底修复空间判断逻辑）
+    - name: 深度清理磁盘（已修复空间判断逻辑）
       run: |
         echo "========================================"
         echo "🗑️ Deep cleaning disk space..."
         df -h
         echo "----------------------------------------"
-        # 删除系统冗余包和缓存（优化清理逻辑，避免重复删除）
+        # 删除系统冗余包和缓存
         sudo apt purge -y --auto-remove -qq \
           dotnet* mono* llvm* android* ghc* powershell* \
           libreoffice* thunderbird* firefox* chrome* \
@@ -33,13 +33,11 @@ jobs:
         sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
         sudo swapoff -a && sudo swapon -a
         sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
-        # 彻底修复逻辑：先提取数字，再精准判断（避免字符串干扰）
+        # 精准判断可用空间（纯数字对比，无荒诞误报）
         echo "----------------------------------------"
         df -h
-        # 提取可用空间数字（忽略单位，仅保留数字部分）
         TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed -e 's/G//' -e 's/\..*//')
         echo "Detected available space: ${TOTAL_AVAIL}GB"
-        # 正确判断：可用空间≥40GB则继续，否则报错
         if [ "$TOTAL_AVAIL" -lt 40 ]; then
           echo "❌ 可用空间不足40GB，当前仅${TOTAL_AVAIL}GB"
           exit 1
@@ -47,19 +45,19 @@ jobs:
         echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
         echo "========================================"
 
-    - name: Install Full Build Dependencies（补充设备树必需依赖）
+    - name: Install Full Build Dependencies（修复语法错误，依赖完整）
       run: |
         echo "========================================"
         echo "🔧 Installing full dependencies..."
         sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
         sudo apt update -y -qq
+        # 修复语法错误：所有依赖库名放入apt install参数内
         sudo apt install -y -qq \
           git python3 openjdk-11-jdk-headless \
           gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
           liblz4-tool lzop make repo ninja-build curl unzip \
           dos2unix rsync bc libxml2-utils xsltproc zip \
           libncurses5 libncursesw5 libc6-dev-i386 \
-          # 补充设备树编译必需依赖
           libssl-dev liblz4-dev libz-dev \
           python3-distutils python3-pip \
           android-sdk-platform-tools-base
@@ -67,45 +65,50 @@ jobs:
         echo "✅ Dependencies installed"
         echo "========================================"
 
-    - name: Setup Build Environment（优化环境变量）
+    - name: Setup Build Environment（匹配MT6768硬件参数）
       run: |
         echo "========================================"
         echo "🔧 Setting up build environment..."
         mkdir -p ~/twrp-build
         cd ~/twrp-build
         
-        # 关键环境变量（适配MT6768和Android 13）
+        # 严格匹配设备参数（来自fastboot/adb/MTKClient）
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
         export TW_DEVICE_VERSION=3.7.0-zyb
         export TARGET_ARCH=arm64
         export TARGET_ARCH_VARIANT=armv8-a
-        export TARGET_CPU_VARIANT=cortex-a53
+        export TARGET_CPU_VARIANT=cortex-a53  # MT6768核心架构
         export TARGET_2ND_ARCH=arm
         export TARGET_2ND_ARCH_VARIANT=armv7-a-neon
         export TARGET_2ND_CPU_VARIANT=cortex-a53
+        export BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=0x4000000  # vendor_boot分区64MB
+        export BOARD_BOOTIMAGE_PARTITION_SIZE=0x2000000  # boot分区32MB
+        export BOARD_USERDATAIMAGE_PARTITION_SIZE=0x37C6CF8000  # userdata分区229GB
+        export BOARD_KERNEL_CMDLINE="bootopt=64S3,32N2,64N2 buildvariant=user"  # 内核命令行
+        export BOARD_DTB_SIZE=159397  # DTB大小（来自MTKClient解包）
         
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Full TWRP Source + 设备树（确保依赖完整）
+    - name: Sync Full TWRP Source + 设备树（依赖完整）
       run: |
         echo "========================================"
         echo "📥 Syncing full TWRP source + device tree..."
         cd ~/twrp-build
         
-        # 初始化完整TWRP源码（适配Android 13）
+        # 初始化完整TWRP源码（适配Android 13/SDK 33）
         repo init --depth=1 \
           -u https://github.com/TeamWin/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 复制设备树到正确路径（确保权限）
+        # 复制设备树并修复权限
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         sudo chmod -R 755 device/zyb/tb8786p1_64_k510_wifi
         
-        # 生成roomservice.xml（强制拉取必需依赖）
+        # 生成roomservice.xml（强制拉取MT6768必需依赖）
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
@@ -113,7 +116,6 @@ jobs:
         echo '           name="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
         echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
-        # 补充MT6768必需的TWRP依赖
         echo '  <project path="vendor/twrp" ' >> .repo/local_manifests/roomservice.xml
         echo '           name="TeamWin/android_vendor_twrp" ' >> .repo/local_manifests/roomservice.xml
         echo '           remote="github" ' >> .repo/local_manifests/roomservice.xml
@@ -124,7 +126,7 @@ jobs:
         echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步源码（优化同步参数，避免超时）
+        # 同步源码（稳定参数，避免超时）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -143,16 +145,13 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
-        # 加载环境变量
         source build/envsetup.sh
-        
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
-        # 执行lunch（输出详细日志）
+        # 执行lunch并验证
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
         
-        # 双重验证设备树和依赖
         if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
           echo "✅ Device tree recognized successfully"
         else
@@ -169,13 +168,10 @@ jobs:
           exit 1
         fi
         
-        echo "📊 Build variables:"
-        echo "TARGET_PRODUCT: $TARGET_PRODUCT"
-        echo "TARGET_DEVICE: $TARGET_DEVICE"
-        echo "TARGET_ARCH: $TARGET_ARCH"
+        echo "📊 Build variables verified"
         echo "========================================"
 
-    - name: Build Vendor Boot Recovery Ramdisk（优化编译参数）
+    - name: Build Vendor Boot Recovery Ramdisk（适配MT6768）
       run: |
         echo "========================================"
         echo "🔨 BUILDING VENDOR_BOOT RECOVERY RAMDISK - $(date)"
@@ -185,7 +181,7 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 适配MT6768的编译参数（避免资源耗尽）
+        # 合理分配编译线程，避免资源耗尽
         m recoveryimage -j$(($(nproc)/2)) 2>&1 | tee build.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
@@ -199,7 +195,7 @@ jobs:
         echo "✅ Build successful at $(date)"
         echo "========================================"
 
-    - name: Collect Ramdisk Artifacts（确保产物完整）
+    - name: Collect Ramdisk Artifacts（产物完整）
       run: |
         echo "========================================"
         echo "📦 Collecting ramdisk artifacts..."
@@ -207,13 +203,13 @@ jobs:
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
-        # 收集所有相关产物（适配vendor_boot格式）
+        # 收集vendor_boot所需产物
         find $OUT_DIR -name "*.cpio*" -o -name "recovery.img" -type f 2>/dev/null | while read file; do
           echo "🎯 Found: $file"
           cp "$file" artifacts/
         done
         
-        # 收集日志用于调试
+        # 收集调试日志
         cp build.log artifacts/
         cp lunch.log artifacts/
         
@@ -236,7 +232,7 @@ jobs:
         echo "========================================"
         echo "Status: ${{ job.status }}"
         echo "Device: tb8786p1_64_k510_wifi (MT6768, Android 13)"
-        echo "Flash command (当前槽位a):"
+        echo "Flash command (当前槽位a，匹配fastboot分区信息):"
         echo "fastboot flash vendor_boot_a <ramdisk-file>.cpio.gz"
         echo "Flash command (当前槽位b):"
         echo "fastboot flash vendor_boot_b <ramdisk-file>.cpio.gz"
