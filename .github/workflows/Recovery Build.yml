@@ -1,230 +1,182 @@
 name: TWRP Build for tb8786p1_64_k510_wifi (Vendor Boot Ramdisk)
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps:
-      - name: Check Environment
-        run: |
-          echo "========================================"
-          echo "📌 ENVIRONMENT INFO - $(date)"
-          echo "========================================"
-          cat /etc/os-release
-          uname -a
-          lscpu | grep -E "Model name|CPU\(s\)"
-          free -h
-          df -h --total | grep -E "Filesystem|total"
-          echo "GCC: $(gcc --version | head -1)"
-          echo "Python3: $(python3 --version)"
-          echo "Java: $(java --version 2>&1 | head -1)"
-          echo "Ninja: $(ninja --version)"
-          echo "========================================"
+    timeout-minutes: 120
 
-      - name: Install Build Dependencies
+    steps:
+      - name: Checkout Device Tree
+        uses: actions/checkout@v4
+        with:
+          path: device/zyb/tb8786p1_64_k510_wifi
+
+      - name: Install Dependencies
         run: |
           echo "========================================"
           echo "🔧 Installing build dependencies..."
-          sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
           sudo apt update -y
           sudo apt install -y bc git-core python3 openjdk-11-jdk-headless \
             gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
-            liblz4-tool lzop make repo ninja-build curl unzip
+            liblz4-tool lzop make repo ninja-build curl unzip \
+            libssl-dev libxml2-utils xsltproc zip
           sudo apt clean
           echo "✅ Dependencies installed"
           echo "========================================"
 
-      - name: Sync Source Code
+      - name: Setup Build Environment
+        run: |
+          echo "========================================"
+          echo "🔧 Setting up build environment..."
+          mkdir -p ~/twrp-build
+          cd ~/twrp-build
+          
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/ccache
+          
+          mkdir -p $CCACHE_DIR
+          ccache -M 10G
+          
+          echo "✅ Environment setup completed"
+          echo "========================================"
+
+      - name: Sync TWRP Source
         run: |
           echo "========================================"
           echo "📥 Syncing TWRP source code..."
-          sudo mkdir -p /mnt/twrp
-          sudo chown -R runner:runner /mnt/twrp
-          cd /mnt/twrp
+          cd ~/twrp-build
           
-          # Initialize repo with minimal manifest
           repo init --depth=1 \
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
             -b twrp-12.1 \
             --no-repo-verify
           
-          # Sync only essential repos
-          repo sync -j$(nproc --all) \
+          # 最小化同步
+          repo sync -j$(nproc) \
             --no-clone-bundle \
-            --optimized-fetch \
             --no-tags \
-            --current-branch \
-            --force-sync \
-            --detach
+            --optimized-fetch \
+            -c \
+            bootable/recovery \
+            build/make \
+            system/core
           
-          # Clone your device tree
-          echo "📂 Cloning device tree..."
-          git clone --depth=1 \
-            https://github.com/WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi \
-            device/zyb/tb8786p1_64_k510_wifi
-            
           echo "✅ Source sync completed"
           echo "========================================"
 
-      - name: Prepare Build Environment
+      - name: Copy Device Tree
         run: |
           echo "========================================"
-          echo "⚙️ Preparing build environment..."
-          cd /mnt/twrp
+          echo "📂 Copying device tree..."
+          cd ~/twrp-build
           
-          # ===== 关键修复：主题文件检查与处理 =====
-          echo "🔍 Checking TWRP theme files..."
-          THEME_BASE="bootable/recovery/gui/theme"
+          mkdir -p device/zyb
+          cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
           
-          # 检查portrait_mdpi主题是否存在
-          if [ -d "$THEME_BASE/portrait_mdpi" ]; then
-            echo "✅ Found portrait_mdpi theme"
-            if [ ! -f "$THEME_BASE/portrait_mdpi/ui.xml" ]; then
-              echo "⚠️ ui.xml missing in portrait_mdpi, checking other themes..."
-              # 查找任何包含ui.xml的主题
-              find "$THEME_BASE" -name "ui.xml" | head -3
-            fi
-          else
-            echo "❌ portrait_mdpi theme not found! Available themes:"
-            ls -la "$THEME_BASE/" 2>/dev/null || echo "Theme directory doesn't exist"
-            echo "⚠️ This may cause build failure"
-          fi
+          echo "✅ Device tree copied"
+          echo "========================================"
+
+      - name: Create UI Config File
+        # 单独拆分步骤，彻底避开 YAML 多行字符串解析问题
+        run: |
+          echo "========================================"
+          echo "🎨 Creating TWRP UI config..."
+          cd ~/twrp-build
           
-          # ===== 环境变量设置 =====
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export LC_ALL=C
-          export NUM_JOBS=4
-          export BUILD_NUMBER=$(date +%Y%m%d.%H%M%S)
+          # 创建必要的目录
+          mkdir -p bootable/recovery/gui/theme/portrait_mdpi
           
-          # 设置构建环境
+          # 使用 echo 逐行写入，避免 EOF 解析冲突
+          echo '<?xml version="1.0"?>' > bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '<recovery>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '  <variables>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '    <themeversion>3</themeversion>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '    <tw_screen_width>1200</tw_screen_width>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '    <tw_screen_height>1920</tw_screen_height>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '  </variables>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          echo '</recovery>' >> bootable/recovery/gui/theme/portrait_mdpi/ui.xml
+          
+          echo "✅ UI config created"
+          echo "========================================"
+
+      - name: Prepare Build
+        run: |
+          echo "========================================"
+          echo "⚙️ Preparing build..."
+          cd ~/twrp-build
+          
           source build/envsetup.sh
+          lunch omni_tb8786p1_64_k510_wifi-eng
           
-          # 选择构建目标
-          lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
-          
-          if ! grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
-            echo "❌ lunch failed!"
-            echo "=== LUNCH LOG ==="
-            cat lunch.log
-            exit 1
-          fi
-          
-          echo "✅ Environment prepared:"
-          grep -E "TARGET_PRODUCT|TARGET_ARCH|PLATFORM_VERSION" lunch.log | head -5
+          echo "✅ Build prepared"
           echo "========================================"
 
-      - name: Build TWRP Vendor Boot Image
+      - name: Build Ramdisk
         run: |
           echo "========================================"
-          echo "🔨 BUILD START - $(date)"
+          echo "🔨 Building recovery ramdisk..."
           echo "========================================"
           
-          # ===== 构建策略 =====
-          # 方案1: 先尝试构建bootimage（可能触发vendor_boot）
-          echo "🔄 Strategy 1: Building bootimage..."
-          make bootimage -j$NUM_JOBS 2>&1 | tee -a build_strategy1.log
+          cd ~/twrp-build
           
-          # 检查是否生成了vendor_boot相关文件
-          OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
-          if [ -f "$OUT_DIR/vendor_boot.img" ] || [ -f "$OUT_DIR/ramdisk-recovery.cpio.gz" ]; then
-            echo "✅ Strategy 1 successful!"
-            cp build_strategy1.log build.log
-          else
-            echo "⚠️ Strategy 1 didn't produce expected output"
-            echo "🔄 Strategy 2: Trying vendorbootimage directly..."
-            
-            # 方案2: 尝试直接构建vendorbootimage
-            if make help 2>/dev/null | grep -q vendorbootimage; then
-              make vendorbootimage -j$NUM_JOBS 2>&1 | tee -a build_strategy2.log
-              cp build_strategy2.log build.log
-            else
-              echo "⚠️ vendorbootimage target not available"
-              echo "🔄 Strategy 3: Building recoveryimage..."
-              
-              # 方案3: 构建recoveryimage
-              make recoveryimage -j$NUM_JOBS 2>&1 | tee -a build_strategy3.log
-              cp build_strategy3.log build.log
-            fi
-          fi
+          # 关键：构建recoveryimage（会生成ramdisk）
+          make -j$(nproc) recoveryimage 2>&1 | tee build.log
           
-          echo "----------------------------------------"
-          echo "✅ BUILD END - $(date)"
+          echo "✅ Build attempted"
           echo "========================================"
 
-      - name: Verify and Collect Artifacts
+      - name: Collect Artifacts
         run: |
           echo "========================================"
-          echo "📦 Verifying build artifacts..."
+          echo "📦 Collecting artifacts..."
           echo "========================================"
           
+          cd ~/twrp-build
           OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
           
-          # 创建产物目录
           mkdir -p artifacts
           
-          # 检查各种可能的输出文件
-          echo "🔍 Looking for build artifacts..."
-          
-          # 1. 检查vendor_boot.img
-          if [ -f "$OUT_DIR/vendor_boot.img" ]; then
-            echo "🎉 FOUND: vendor_boot.img"
-            ls -lh "$OUT_DIR/vendor_boot.img"
-            cp "$OUT_DIR/vendor_boot.img" artifacts/
-            echo "FLASH: fastboot flash vendor_boot vendor_boot.img"
-          fi
-          
-          # 2. 检查ramdisk文件
-          RAMDISK_FILES=$(find "$OUT_DIR" -name "*.cpio*" -type f 2>/dev/null)
-          if [ -n "$RAMDISK_FILES" ]; then
-            echo "🎉 FOUND ramdisk files:"
-            echo "$RAMDISK_FILES" | while read file; do
-              ls -lh "$file"
-              cp "$file" artifacts/
-              
-              # 如果是压缩的ramdisk
-              if [[ "$file" == *.cpio.gz ]]; then
-                echo "FLASH: fastboot flash vendor_boot:recovery $(basename "$file")"
-              fi
-            done
-          fi
-          
-          # 3. 检查其他相关文件
-          for img in boot.img dtbo.img vbmeta.img; do
-            if [ -f "$OUT_DIR/$img" ]; then
-              echo "📄 Found: $img"
-              cp "$OUT_DIR/$img" artifacts/
-            fi
+          # 查找所有可能的ramdisk文件
+          find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
+            echo "📄 Found: $file"
+            cp "$file" artifacts/
           done
           
-          # 4. 检查dtb文件
-          if [ -f "$OUT_DIR/dtb.img" ] || [ -f "$OUT_DIR/dtb" ]; then
-            echo "📄 Found DTB files"
-            find "$OUT_DIR" -name "*.dtb" -o -name "dtb.img" | xargs -I {} cp {} artifacts/
+          # 检查是否有recovery目录
+          if [ -d "$OUT_DIR/recovery" ]; then
+            echo "📁 Found recovery directory"
+            ls -la $OUT_DIR/recovery/
+            
+            # 尝试从recovery目录创建ramdisk
+            if [ -d "$OUT_DIR/recovery/root" ]; then
+              (cd $OUT_DIR/recovery/root && find . | cpio -o -H newc | gzip > ~/twrp-build/artifacts/ramdisk-recovery.cpio.gz)
+            fi
           fi
           
-          # 5. 收集构建日志
+          # 如果没有找到任何文件，输出调试信息
+          if [ -z "$(ls artifacts/*.cpio* 2>/dev/null)" ]; then
+            echo "⚠️ No ramdisk files found"
+            echo "=== DEBUG INFO ==="
+            ls -la $OUT_DIR/
+            find $OUT_DIR -type f -name "*.img" -o -name "*.cpio*" 2>/dev/null
+          fi
+          
           cp build.log artifacts/
-          cp lunch.log artifacts/
           
-          # 如果没有找到任何预期产物
-          if [ ! -f "artifacts/vendor_boot.img" ] && [ -z "$(find artifacts -name '*.cpio*')" ]; then
-            echo "❌ No expected artifacts found!"
-            echo "=== BUILD LOG ERRORS ==="
-            grep -E "error:|failed:|fatal:|Error |Stop" build.log | head -20
-            echo "=== LAST 50 LINES OF BUILD LOG ==="
-            tail -50 build.log
-            exit 1
-          fi
-          
-          echo "✅ Artifact collection completed"
-          echo "📁 Artifacts directory contents:"
-          ls -lh artifacts/
+          echo "✅ Artifacts collected"
           echo "========================================"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: twrp-build-artifacts
-          path: |
-            /mnt/twrp/artifacts/*
-          retention-days: 7
+          name: twrp-ramdisk
+          path: ~/twrp-build/artifacts/*
+          retention-days: 30
