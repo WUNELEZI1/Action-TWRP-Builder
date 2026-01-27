@@ -21,21 +21,21 @@ jobs:
           echo "Ninja: $(ninja --version)"
           echo "========================================"
 
-      - name: 深度清理磁盘（释放最大空间）
+      - name: 深度清理磁盘（修复权限问题）
         run: |
           echo "========================================"
           df -h
           echo "----------------------------------------"
-          # 1. 删除系统冗余包
-          sudo apt purge -y --auto-remove dotnet* mono* llvm* android* ghc* powershell*
-          # 2. 清理缓存和日志
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
-          sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
-          sudo docker system prune -a -f --volumes
+          # 1. 删除系统冗余包（仅尝试删除已安装的包，避免报错）
+          sudo apt purge -y --auto-remove dotnet* mono* llvm* android* ghc* powershell* 2>/dev/null || true
+          # 2. 清理缓存和日志（跳过无权限文件）
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell 2>/dev/null || true
+          sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games 2>/dev/null || true
+          sudo docker system prune -a -f --volumes 2>/dev/null || true
           sudo apt clean
-          sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/*
-          # 3. 清理临时文件
-          sudo rm -rf /mnt/* /media/* /srv/*
+          sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/* 2>/dev/null || true
+          # 3. 清理临时文件（移除无权限的/mnt/*删除）
+          sudo rm -rf /media/* /srv/* 2>/dev/null || true
           sudo swapoff -a && sudo swapon -a
           # 4. 验证空间
           echo "----------------------------------------"
