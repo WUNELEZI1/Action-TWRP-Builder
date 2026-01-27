@@ -17,33 +17,47 @@ jobs:
       with:
         path: device/zyb/tb8786p1_64_k510_wifi
 
-    - name: Check Environment
+    - name: 深度清理磁盘（释放最大空间）
       run: |
         echo "========================================"
-        echo "📌 ENVIRONMENT INFO - $(date)"
-        echo "========================================"
-        cat /etc/os-release
-        uname -a
-        lscpu | grep -E "Model name|CPU\(s\)"
-        free -h
-        df -h --total | grep -E "Filesystem|total"
-        echo "GCC: $(gcc --version | head -1)"
-        echo "Python3: $(python3 --version)"
-        echo "Java: $(java --version 2>&1 | head -1)"
-        echo "Ninja: $(ninja --version)"
+        echo "🗑️ Deep cleaning disk space..."
+        df -h
+        echo "----------------------------------------"
+        # 1. 删除系统冗余包和缓存
+        sudo apt purge -y --auto-remove -qq \
+          dotnet* mono* llvm* android* ghc* powershell* \
+          libreoffice* thunderbird* firefox* chrome* \
+          docker* lxd* snapd*
+        # 2. 清理日志和临时文件
+        sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/*
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+        sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
+        # 3. 清理swap和冗余目录
+        sudo swapoff -a && sudo swapon -a
+        sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
+        # 4. 验证空间（确保可用≥40GB）
+        echo "----------------------------------------"
+        df -h
+        TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed 's/G//')
+        if (( $(echo "$TOTAL_AVAIL < 40" | bc -l) )); then
+          echo "❌ 可用空间不足40GB，当前仅${TOTAL_AVAIL}GB"
+          exit 1
+        fi
+        echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
         echo "========================================"
 
-    - name: Install Build Dependencies
+    - name: Install Minimal Build Dependencies
       run: |
         echo "========================================"
-        echo "🔧 Installing build dependencies..."
-        sudo apt update -y
-        sudo apt install -y bc git-core python3 openjdk-11-jdk-headless \
+        echo "🔧 Installing minimal dependencies..."
+        sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
+        sudo apt update -y -qq
+        # 仅安装编译必需依赖，避免冗余
+        sudo apt install -y -qq \
+          git python3 openjdk-11-jdk-headless \
           gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
           liblz4-tool lzop make repo ninja-build curl unzip \
-          libssl-dev libxml2-utils xsltproc zip \
-          libncurses5 libncursesw5 libc6-dev-i386 \
-          dos2unix rsync imagemagick
+          dos2unix rsync
         sudo apt clean
         echo "✅ Dependencies installed"
         echo "========================================"
@@ -62,13 +76,13 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync TWRP Source + Configure Device Tree（修复repo冲突）
+    - name: Sync Minimal TWRP Source（最小化同步，节省空间）
       run: |
         echo "========================================"
-        echo "📥 Syncing TWRP source + configuring device tree..."
+        echo "📥 Syncing minimal TWRP source..."
         cd ~/twrp-build
         
-        # 初始化源码（指定默认remote，避免冲突）
+        # 初始化源码（仅同步核心仓库，跳过冗余）
         repo init --depth=1 \
           -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
@@ -78,7 +92,7 @@ jobs:
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 生成roomservice.xml（不重复定义github remote，避免冲突）
+        # 生成roomservice.xml（无重复remote配置）
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
@@ -88,16 +102,25 @@ jobs:
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步源码（移除--force-sync，避免覆盖冲突）
+        # 最小化同步（仅核心仓库，避免下载冗余依赖）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
           --optimized-fetch \
           --current-branch \
           -c \
-          --prune
+          --prune \
+          bootable/recovery \
+          build/make \
+          build/soong \
+          system/core \
+          system/vold \
+          external/mksh \
+          external/selinux \
+          external/zlib \
+          device/zyb/tb8786p1_64_k510_wifi
         
-        echo "✅ Source sync + device tree configuration completed"
+        echo "✅ Minimal source sync completed"
         echo "========================================"
 
     - name: Prepare Build Configuration
@@ -137,7 +160,7 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 使用m命令构建recoveryimage（适配Android 12.1）
+        # 最小化编译（仅构建recoveryimage，节省空间）
         m recoveryimage -j$(nproc) 2>&1 | tee build.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
