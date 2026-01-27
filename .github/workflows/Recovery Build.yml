@@ -55,7 +55,6 @@ jobs:
         mkdir -p ~/twrp-build
         cd ~/twrp-build
         
-        # 移除ccache相关配置，适配一次性构建
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
         export TW_DEVICE_VERSION=3.7.0-zyb
@@ -63,17 +62,27 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Minimal TWRP Source
+    - name: Sync TWRP Source + Device Tree
       run: |
         echo "========================================"
-        echo "📥 Syncing minimal TWRP source code..."
+        echo "📥 Syncing TWRP source + device tree..."
         cd ~/twrp-build
         
+        # 初始化源码
         repo init --depth=1 \
           -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
+        # 复制设备树到正确路径
+        mkdir -p device/zyb
+        cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
+        
+        # 复制roomservice.xml，强制识别设备树
+        mkdir -p .repo/local_manifests
+        cp device/zyb/tb8786p1_64_k510_wifi/.repo/local_manifests/roomservice.xml .repo/local_manifests/
+        
+        # 同步源码（包含设备树）
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -83,21 +92,7 @@ jobs:
           -c \
           --prune
         
-        echo "✅ Source sync completed"
-        echo "========================================"
-
-    - name: Copy Device Tree (Your Complete Files)
-      run: |
-        echo "========================================"
-        echo "📂 Copying your complete device tree..."
-        cd ~/twrp-build
-        
-        mkdir -p device/zyb
-        cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
-        
-        find device/zyb/tb8786p1_64_k510_wifi -name "*.mk" -exec dos2unix {} \;
-        
-        echo "✅ Your device tree copied (all files preserved)"
+        echo "✅ Source + device tree sync completed"
         echo "========================================"
 
     - name: Prepare Build Configuration
@@ -106,33 +101,45 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
+        # 加载环境变量（关键：使用envsetup.sh）
         source build/envsetup.sh
         
+        # 强制设置产品变量
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
+        # 执行lunch，验证设备树识别
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
+        
+        # 验证lunch是否成功
+        if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
+          echo "✅ Device tree recognized successfully"
+        else
+          echo "❌ Device tree not found! Checking path..."
+          ls -la device/zyb/
+          exit 1
+        fi
         
         echo "📊 Build variables:"
         echo "TARGET_PRODUCT: $TARGET_PRODUCT"
         echo "TARGET_DEVICE: $TARGET_DEVICE"
-        
-        echo "✅ Build configuration prepared"
         echo "========================================"
 
-    - name: Build Vendor Boot Recovery Ramdisk
+    - name: Build Vendor Boot Recovery Ramdisk（修复make命令）
       run: |
         echo "========================================"
         echo "🔨 BUILDING VENDOR_BOOT RECOVERY RAMDISK - $(date)"
         echo "========================================"
         
         cd ~/twrp-build
-        export NUM_JOBS=$(nproc)
+        source build/envsetup.sh
+        lunch omni_tb8786p1_64_k510_wifi-eng
         
-        make -j$NUM_JOBS recoveryimage 2>&1 | tee build.log
+        # 关键修复：使用Android 12.1支持的m命令（替代make）
+        m recoveryimage -j$(nproc) 2>&1 | tee build.log
         
+        # 检查构建状态
         BUILD_STATUS=${PIPESTATUS[0]}
-        
         if [ $BUILD_STATUS -ne 0 ]; then
           echo "❌ Build failed! Showing error details:"
           grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -20
@@ -147,24 +154,22 @@ jobs:
       run: |
         echo "========================================"
         echo "📦 Collecting ramdisk artifacts..."
-        echo "========================================"
-        
         cd ~/twrp-build
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
+        # 收集ramdisk文件（适配vendor_boot:recovery）
         find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
           echo "🎯 Found ramdisk file: $file"
           cp "$file" artifacts/
         done
         
+        # 收集构建日志
         cp build.log artifacts/
         cp lunch.log artifacts/
         
         echo "📊 Collected artifacts:"
         ls -lh artifacts/
-        
-        echo "✅ Artifact collection completed"
         echo "========================================"
 
     - name: Upload Ramdisk Artifacts
@@ -183,12 +188,5 @@ jobs:
         echo "Status: ${{ job.status }}"
         echo "Device: tb8786p1_64_k510_wifi (ZYB ZPD1321)"
         echo "Target: vendor_boot:recovery"
-        
-        if [ -d ~/twrp-build/artifacts ]; then
-          echo "Generated artifacts:"
-          ls -la ~/twrp-build/artifacts/
-        fi
-        
-        echo "========================================"
-        echo "Flash command (for your device):"
+        echo "Flash command:"
         echo "fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
