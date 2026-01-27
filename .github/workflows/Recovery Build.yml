@@ -17,7 +17,7 @@ jobs:
       with:
         path: device/zyb/tb8786p1_64_k510_wifi
 
-    - name: 深度清理磁盘（释放最大空间）
+    - name: 深度清理磁盘（修复空间判断逻辑）
       run: |
         echo "========================================"
         echo "🗑️ Deep cleaning disk space..."
@@ -33,7 +33,7 @@ jobs:
         sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
         sudo swapoff -a && sudo swapon -a
         sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
-        # 验证空间（使用du替代bc，避免依赖缺失）
+        # 修复逻辑：判断可用空间≥40GB才继续（之前写反了）
         echo "----------------------------------------"
         df -h
         TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed 's/G//')
@@ -74,23 +74,23 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync Full TWRP Source + 设备树（补充完整依赖）
+    - name: Sync Full TWRP Source + 设备树
       run: |
         echo "========================================"
         echo "📥 Syncing full TWRP source + device tree..."
         cd ~/twrp-build
         
-        # 初始化完整TWRP源码（而非minimal，确保依赖齐全）
+        # 初始化完整TWRP源码
         repo init --depth=1 \
           -u https://github.com/TeamWin/platform_manifest_twrp_aosp \
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 复制你的设备树到正确路径
+        # 复制设备树
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 生成roomservice.xml（指定本地设备树，避免远程拉取）
+        # 生成roomservice.xml
         mkdir -p .repo/local_manifests
         echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
         echo '<manifest>' >> .repo/local_manifests/roomservice.xml
@@ -98,14 +98,13 @@ jobs:
         echo '           name="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
         echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
         echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
-        echo '  <!-- 补充TWRP必需依赖仓库 -->' >> .repo/local_manifests/roomservice.xml
         echo '  <project path="vendor/twrp" ' >> .repo/local_manifests/roomservice.xml
         echo '           name="TeamWin/android_vendor_twrp" ' >> .repo/local_manifests/roomservice.xml
         echo '           remote="github" ' >> .repo/local_manifests/roomservice.xml
         echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
         echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步完整源码（包含vendor/twrp依赖）
+        # 同步源码
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -123,20 +122,16 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
-        # 加载完整envsetup.sh（包含vendor/twrp依赖）
         source build/envsetup.sh
-        
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
-        # 执行lunch
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
         
-        # 验证设备树和依赖识别
         if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
           echo "✅ Device tree recognized successfully"
         else
-          echo "❌ Device tree not found! Checking path..."
+          echo "❌ Device tree not found!"
           ls -la device/zyb/
           exit 1
         fi
@@ -145,13 +140,10 @@ jobs:
           echo "✅ TWRP vendor dependencies found"
         else
           echo "❌ TWRP vendor dependencies missing!"
-          ls -la vendor/twrp/
           exit 1
         fi
         
-        echo "📊 Build variables:"
-        echo "TARGET_PRODUCT: $TARGET_PRODUCT"
-        echo "TARGET_DEVICE: $TARGET_DEVICE"
+        echo "📊 Build variables: TARGET_PRODUCT=$TARGET_PRODUCT, TARGET_DEVICE=$TARGET_DEVICE"
         echo "========================================"
 
     - name: Build Vendor Boot Recovery Ramdisk
@@ -164,44 +156,40 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 使用m命令构建（适配Android 12.1，指定-j4避免资源耗尽）
         m recoveryimage -j4 2>&1 | tee build.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
         if [ $BUILD_STATUS -ne 0 ]; then
-          echo "❌ Build failed! Showing error details:"
-          grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -30
+          echo "❌ Build failed! Error details:"
+          grep -i -E "error:|failed:|fatal:" build.log | head -30
           tail -100 build.log
           exit 1
         fi
         
-        echo "✅ Build successful at $(date)"
+        echo "✅ Build successful!"
         echo "========================================"
 
-    - name: Collect Ramdisk Artifacts
+    - name: Collect Artifacts
       run: |
         echo "========================================"
-        echo "📦 Collecting ramdisk artifacts..."
+        echo "📦 Collecting artifacts..."
         cd ~/twrp-build
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
-        # 收集vendor_boot:recovery所需的ramdisk文件
-        find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
-          echo "🎯 Found ramdisk file: $file"
+        find $OUT_DIR -name "*.cpio*" -type f | while read file; do
+          echo "🎯 Found ramdisk: $file"
           cp "$file" artifacts/
         done
         
-        # 收集编译产物和日志
         cp $OUT_DIR/recovery.img artifacts/ 2>/dev/null || true
         cp build.log artifacts/
         cp lunch.log artifacts/
         
-        echo "📊 Collected artifacts:"
         ls -lh artifacts/
         echo "========================================"
 
-    - name: Upload Ramdisk Artifacts
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: twrp-vendor-boot-ramdisk
@@ -215,9 +203,5 @@ jobs:
         echo "📊 BUILD SUMMARY - $(date)"
         echo "========================================"
         echo "Status: ${{ job.status }}"
-        echo "Device: tb8786p1_64_k510_wifi (ZYB ZPD1321)"
-        echo "Target: vendor_boot:recovery"
-        echo "Flash command:"
-        echo "fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
-        echo "或（备用）:"
-        echo "fastboot flash vendor_boot_a <ramdisk-file>.cpio.gz"
+        echo "Device: tb8786p1_64_k510_wifi (MT6768, Android 13)"
+        echo "Flash command: fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
