@@ -62,10 +62,10 @@ jobs:
         echo "✅ Environment setup completed"
         echo "========================================"
 
-    - name: Sync TWRP Source + Device Tree
+    - name: Sync TWRP Source + Configure Device Tree
       run: |
         echo "========================================"
-        echo "📥 Syncing TWRP source + device tree..."
+        echo "📥 Syncing TWRP source + configuring device tree..."
         cd ~/twrp-build
         
         # 初始化源码
@@ -74,15 +74,23 @@ jobs:
           -b twrp-12.1 \
           --no-repo-verify
         
-        # 复制设备树到正确路径
+        # 复制你的设备树到正确路径
         mkdir -p device/zyb
         cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
         
-        # 复制roomservice.xml，强制识别设备树
+        # 生成roomservice.xml（避免heredoc的YAML解析问题）
         mkdir -p .repo/local_manifests
-        cp device/zyb/tb8786p1_64_k510_wifi/.repo/local_manifests/roomservice.xml .repo/local_manifests/
+        echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
+        echo '<manifest>' >> .repo/local_manifests/roomservice.xml
+        echo '  <remote name="github" fetch="https://github.com/" />' >> .repo/local_manifests/roomservice.xml
+        echo '  <project path="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
+        echo '           name="WUNELEZI1/android_device_zyb_tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
+        echo '           remote="github"' >> .repo/local_manifests/roomservice.xml
+        echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
+        echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
+        echo '</manifest>' >> .repo/local_manifests/roomservice.xml
         
-        # 同步源码（包含设备树）
+        # 同步源码
         repo sync -j$(nproc --all) \
           --no-clone-bundle \
           --no-tags \
@@ -92,7 +100,7 @@ jobs:
           -c \
           --prune
         
-        echo "✅ Source + device tree sync completed"
+        echo "✅ Source sync + device tree configuration completed"
         echo "========================================"
 
     - name: Prepare Build Configuration
@@ -101,17 +109,14 @@ jobs:
         echo "⚙️ Preparing build configuration..."
         cd ~/twrp-build
         
-        # 加载环境变量（关键：使用envsetup.sh）
         source build/envsetup.sh
-        
-        # 强制设置产品变量
         export TARGET_DEVICE=tb8786p1_64_k510_wifi
         export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
         
-        # 执行lunch，验证设备树识别
+        # 执行lunch
         lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
         
-        # 验证lunch是否成功
+        # 验证设备树识别
         if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
           echo "✅ Device tree recognized successfully"
         else
@@ -125,7 +130,7 @@ jobs:
         echo "TARGET_DEVICE: $TARGET_DEVICE"
         echo "========================================"
 
-    - name: Build Vendor Boot Recovery Ramdisk（修复make命令）
+    - name: Build Vendor Boot Recovery Ramdisk
       run: |
         echo "========================================"
         echo "🔨 BUILDING VENDOR_BOOT RECOVERY RAMDISK - $(date)"
@@ -135,10 +140,9 @@ jobs:
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 关键修复：使用Android 12.1支持的m命令（替代make）
+        # 使用m命令构建recoveryimage（适配Android 12.1）
         m recoveryimage -j$(nproc) 2>&1 | tee build.log
         
-        # 检查构建状态
         BUILD_STATUS=${PIPESTATUS[0]}
         if [ $BUILD_STATUS -ne 0 ]; then
           echo "❌ Build failed! Showing error details:"
@@ -158,13 +162,13 @@ jobs:
         OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
         mkdir -p artifacts
         
-        # 收集ramdisk文件（适配vendor_boot:recovery）
+        # 收集所有ramdisk相关文件（适配vendor_boot:recovery）
         find $OUT_DIR -name "*.cpio*" -type f 2>/dev/null | while read file; do
           echo "🎯 Found ramdisk file: $file"
           cp "$file" artifacts/
         done
         
-        # 收集构建日志
+        # 收集日志
         cp build.log artifacts/
         cp lunch.log artifacts/
         
