@@ -1,4 +1,5 @@
-name: TWRP Build for tb8786p1_64_k510_wifi (Vendor Boot Ramdisk)
+name: TWRP Build for tb8786p1_64_k510_wifi (Vendor Boot)
+
 on:
   workflow_dispatch:
   push:
@@ -10,243 +11,94 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    
+
     steps:
     - name: Checkout Device Tree
       uses: actions/checkout@v4
       with:
         path: device/zyb/tb8786p1_64_k510_wifi
 
-    - name: 深度清理磁盘（空间判断正常）
+    - name: Free Disk Space
       run: |
-        echo "========================================"
-        echo "🗑️ Deep cleaning disk space..."
-        df -h
-        echo "----------------------------------------"
-        # 删除系统冗余包和缓存
-        sudo apt purge -y --auto-remove -qq \
-          dotnet* mono* llvm* android* ghc* powershell* \
-          libreoffice* thunderbird* firefox* chrome* \
-          docker* lxd* snapd*
+        echo "🧹 Freeing disk space..."
+        sudo apt purge -y --auto-remove -qq dotnet* mono* llvm* android* ghc* powershell* libreoffice* thunderbird* firefox* chrome* docker* lxd* snapd*
         sudo rm -rf /var/lib/apt/lists/* /var/log/* /tmp/* ~/.cache/* /var/cache/*
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
-        sudo rm -rf /usr/share/miniconda /usr/local/lib/node_modules /usr/local/games /usr/games
-        sudo swapoff -a && sudo swapon -a
-        sudo rm -rf /media/* /srv/* /mnt/* 2>/dev/null || true
-        # 验证可用空间（125GB正常识别）
-        echo "----------------------------------------"
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/miniconda
         df -h
-        TOTAL_AVAIL=$(df -h --total | grep "total" | awk '{print $4}' | sed -e 's/G//' -e 's/\..*//')
-        echo "Detected available space: ${TOTAL_AVAIL}GB"
-        if [ "$TOTAL_AVAIL" -lt 40 ]; then
-          echo "❌ 可用空间不足40GB，当前仅${TOTAL_AVAIL}GB"
-          exit 1
-        fi
-        echo "✅ 可用空间充足（${TOTAL_AVAIL}GB ≥ 40GB）"
-        echo "========================================"
 
-    - name: Install Full Build Dependencies（依赖完整）
+    - name: Install Dependencies
       run: |
-        echo "========================================"
-        echo "🔧 Installing full dependencies..."
         sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
-        sudo apt update -y -qq
-        # 剔除无效包，保留必需依赖
-        sudo apt install -y -qq \
-          git python3 openjdk-11-jdk-headless \
-          gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev \
-          liblz4-tool lzop make repo ninja-build curl unzip \
-          dos2unix rsync bc libxml2-utils xsltproc zip \
-          libncurses5 libncursesw5 libc6-dev-i386 \
-          libssl-dev liblz4-dev libz-dev \
-          python3-distutils python3-pip
+        sudo apt update -qq
+        sudo apt install -y -qq git python3 openjdk-11-jdk-headless gcc-multilib g++-multilib lib32z1-dev lib32ncurses5-dev liblz4-tool lzop make repo ninja-build curl unzip dos2unix rsync bc libxml2-utils xsltproc zip libncurses5 libncursesw5 libc6-dev-i386 libssl-dev liblz4-dev libz-dev python3-distutils python3-pip
         sudo apt clean
-        echo "✅ Dependencies installed"
-        echo "========================================"
 
-    - name: Setup Build Environment（精准匹配设备参数）
+    - name: Sync TWRP Source + Device Tree
       run: |
-        echo "========================================"
-        echo "🔧 Setting up build environment..."
-        mkdir -p ~/twrp-build
-        cd ~/twrp-build
-        
-        # 严格匹配MT6768+Android 13参数（来自fastboot/adb/MTKClient）
-        export ALLOW_MISSING_DEPENDENCIES=true
-        export LC_ALL=C
-        export TW_DEVICE_VERSION=3.7.0-zyb
-        export TARGET_ARCH=arm64
-        export TARGET_ARCH_VARIANT=armv8-a
-        export TARGET_CPU_VARIANT=cortex-a53  # MT6768核心
-        export TARGET_2ND_ARCH=arm
-        export TARGET_2ND_ARCH_VARIANT=armv7-a-neon
-        export TARGET_2ND_CPU_VARIANT=cortex-a53
-        export BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=0x4000000  # vendor_boot 64MB
-        export BOARD_BOOTIMAGE_PARTITION_SIZE=0x2000000  # boot 32MB
-        export BOARD_USERDATAIMAGE_PARTITION_SIZE=0x37C6CF8000  # userdata 229GB
-        export BOARD_KERNEL_CMDLINE="bootopt=64S3,32N2,64N2 buildvariant=user"  # 内核命令行
-        export BOARD_DTB_SIZE=159397  # DTB大小（MTKClient解包数据）
-        export BOARD_DYNAMIC_PARTITIONS=true  # 动态分区开启
-        export BOOTLOADER_DEVICE_NAME=tb8786p1_64_k510_wifi  # 设备名称
-        export TWRP_MANIFEST_URL="https://github.com/TeamWin/platform_manifest_twrp_aosp"
-        export TWRP_MANIFEST_BRANCH="twrp-12.1"
-        
-        echo "✅ Environment setup completed"
-        echo "========================================"
+        mkdir -p ~/twrp
+        cd ~/twrp
 
-    - name: Sync Full TWRP Source + 设备树（无认证同步方案）
-      run: |
-        echo "========================================"
-        echo "📥 Syncing full TWRP source + device tree..."
-        cd ~/twrp-build
-        
-        # 配置git无认证同步（避免交互式凭据请求）
-        git config --global credential.helper store
-        echo "https://github.com" > ~/.git-credentials
-        git config --global url."https://github.com/".insteadOf git@github.com:
-        git config --global url."https://".insteadOf git://
-        
-        # 初始化TWRP源码（使用HTTPS而非SSH，无需认证）
-        repo init --depth=1 \
-          -u https://github.com/TeamWin/platform_manifest_twrp_aosp \
-          -b twrp-12.1 \
-          --no-repo-verify \
-          --config-name
-        
-        # 复制设备树并修复权限
+        # Init TWRP manifest (Android 13 = twrp-12.1)
+        repo init --depth=1 -u https://github.com/TeamWin/platform_manifest_twrp_aosp -b twrp-12.1 --no-repo-verify
+
+        # Copy your device tree
         mkdir -p device/zyb
-        cp -r $GITHUB_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
-        sudo chmod -R 755 device/zyb/tb8786p1_64_k510_wifi
-        
-        # 生成roomservice.xml（拉取MT6768必需依赖）
-        mkdir -p .repo/local_manifests
-        echo '<?xml version="1.0" encoding="UTF-8"?>' > .repo/local_manifests/roomservice.xml
-        echo '<manifest>' >> .repo/local_manifests/roomservice.xml
-        echo '  <project path="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
-        echo '           name="device/zyb/tb8786p1_64_k510_wifi"' >> .repo/local_manifests/roomservice.xml
-        echo '           revision="main"' >> .repo/local_manifests/roomservice.xml
-        echo '           groups="device" />' >> .repo/local_manifests/roomservice.xml
-        echo '  <project path="vendor/twrp" ' >> .repo/local_manifests/roomservice.xml
-        echo '           name="TeamWin/android_vendor_twrp" ' >> .repo/local_manifests/roomservice.xml
-        echo '           remote="github" ' >> .repo/local_manifests/roomservice.xml
-        echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
-        echo '  <project path="external/mksh" ' >> .repo/local_manifests/roomservice.xml
-        echo '           name="TeamWin/android_external_mksh" ' >> .repo/local_manifests/roomservice.xml
-        echo '           remote="github" ' >> .repo/local_manifests/roomservice.xml
-        echo '           revision="twrp-12.1" />' >> .repo/local_manifests/roomservice.xml
-        echo '</manifest>' >> .repo/local_manifests/roomservice.xml
-        
-        # 同步源码（添加超时重试，避免网络问题）
-        repo sync -j$(nproc --all) \
-          --no-clone-bundle \
-          --no-tags \
-          --optimized-fetch \
-          --current-branch \
-          -c \
-          --prune \
-          --force-sync \
-          --retry 3 \
-          --timeout 300
-        
-        echo "✅ Full source + device tree sync completed"
-        echo "========================================"
+        cp -r $Github_WORKSPACE/device/zyb/tb8786p1_64_k510_wifi device/zyb/
 
-    - name: Prepare Build Configuration（设备树验证）
+        # Sync
+        repo sync -c --force-sync --no-clone-bundle --optimized-fetch --prune -j$(nproc)
+
+    - name: Setup Build & Lunch
       run: |
-        echo "========================================"
-        echo "⚙️ Preparing build configuration..."
-        cd ~/twrp-build
-        
+        cd ~/twrp
         source build/envsetup.sh
-        export TARGET_DEVICE=tb8786p1_64_k510_wifi
-        export TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi
-        
-        # 执行lunch并验证设备树识别
-        lunch omni_tb8786p1_64_k510_wifi-eng 2>&1 | tee lunch.log
-        
-        if grep -q "TARGET_PRODUCT=omni_tb8786p1_64_k510_wifi" lunch.log; then
-          echo "✅ Device tree recognized successfully"
-        else
-          echo "❌ Device tree not found! Path check:"
-          ls -la device/zyb/
-          exit 1
-        fi
-        
-        if [ -f "vendor/twrp/build/envsetup.sh" ]; then
-          echo "✅ TWRP vendor dependencies found"
-        else
-          echo "❌ TWRP vendor dependencies missing!"
-          ls -la vendor/twrp/
-          exit 1
-        fi
-        
-        echo "📊 Build variables verified"
-        echo "========================================"
+        lunch omni_tb8786p1_64_k510_wifi-eng
 
-    - name: Build Vendor Boot Recovery Ramdisk（适配MT6768编译）
+    - name: Build vendor_boot.img (NOT recovery.img!)
       run: |
-        echo "========================================"
-        echo "🔨 BUILDING VENDOR_BOOT RECOVERY RAMDISK - $(date)"
-        echo "========================================"
-        
-        cd ~/twrp-build
+        cd ~/twrp
         source build/envsetup.sh
         lunch omni_tb8786p1_64_k510_wifi-eng
         
-        # 合理分配线程，避免资源耗尽
-        m recoveryimage -j$(($(nproc)/2)) 2>&1 | tee build.log
-        
-        BUILD_STATUS=${PIPESTATUS[0]}
-        if [ $BUILD_STATUS -ne 0 ]; then
-          echo "❌ Build failed! Error details:"
-          grep -i -E "error:|failed:|fatal:|No rule to make target|Stop" build.log | head -30
-          tail -100 build.log
+        # 🔥 关键：必须用 vendor_bootimage，不是 recoveryimage！
+        mka vendor_bootimage -j$(nproc)
+
+    - name: Collect Artifacts
+      run: |
+        cd ~/twrp
+        OUT=out/target/product/tb8786p1_64_k510_wifi
+        mkdir -p artifacts
+
+        if [ -f "$OUT/vendor_boot.img" ]; then
+          cp "$OUT/vendor_boot.img" artifacts/
+          echo "✅ SUCCESS: vendor_boot.img built!"
+        else
+          echo "❌ FAILED: vendor_boot.img not found!"
+          ls -la $OUT/
           exit 1
         fi
-        
-        echo "✅ Build successful at $(date)"
-        echo "========================================"
 
-    - name: Collect Ramdisk Artifacts（产物完整）
-      run: |
-        echo "========================================"
-        echo "📦 Collecting ramdisk artifacts..."
-        cd ~/twrp-build
-        OUT_DIR="out/target/product/tb8786p1_64_k510_wifi"
-        mkdir -p artifacts
-        
-        # 收集vendor_boot:recovery所需产物
-        find $OUT_DIR -name "*.cpio*" -o -name "recovery.img" -type f 2>/dev/null | while read file; do
-          echo "🎯 Found: $file"
-          cp "$file" artifacts/
-        done
-        
-        # 收集调试日志
-        cp build.log artifacts/
-        cp lunch.log artifacts/
-        
-        echo "📊 Collected artifacts:"
-        ls -lh artifacts/
-        echo "========================================"
+        # Optional: also collect boot.img (in case fallback needed)
+        [ -f "$OUT/boot.img" ] && cp "$OUT/boot.img" artifacts/
 
-    - name: Upload Ramdisk Artifacts
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: twrp-vendor-boot-ramdisk
-        path: ~/twrp-build/artifacts/*
+        name: twrp-vendor_boot-for-tb8786p1_64_k510_wifi
+        path: ~/twrp/artifacts
         retention-days: 30
 
-    - name: Build Summary
+    - name: Final Instructions
       if: always()
       run: |
-        echo "========================================"
-        echo "📊 BUILD SUMMARY - $(date)"
-        echo "========================================"
-        echo "Status: ${{ job.status }}"
-        echo "Device: tb8786p1_64_k510_wifi (MT6768, Android 13)"
-        echo "当前槽位（fastboot识别）: a"
-        echo "Flash command（适配双槽位）:"
-        echo "fastboot flash vendor_boot_a <ramdisk-file>.cpio.gz"
-        echo "fastboot flash vendor_boot_b <ramdisk-file>.cpio.gz"
-        echo "通用命令:"
-        echo "fastboot flash vendor_boot:recovery <ramdisk-file>.cpio.gz"
+        echo "=============================================="
+        echo "📱 DEVICE: ZYB ZPD1321 (MT6768, Android 13)"
+        echo "📦 OUTPUT: vendor_boot.img (contains TWRP)"
+        echo ""
+        echo "🔧 Flash command (A/B slot aware):"
+        echo "fastboot flash vendor_boot_a vendor_boot.img"
+        echo "fastboot flash vendor_boot_b vendor_boot.img"
+        echo ""
+        echo "🔄 Reboot to TWRP:"
+        echo "fastboot reboot recovery"
+        echo "=============================================="
