@@ -151,6 +151,21 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
+        
+    - name: Check available targets
+      run: |
+        source build/envsetup.sh
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        
+        echo "=== Checking available build targets ==="
+        make help | grep -i boot
+        
+        echo "=== Checking ninja targets ==="
+        ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets | grep -i boot
+        
+        echo "=== Checking vendor_boot in targets ==="
+        ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets all | grep -i vendor
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Building recovery
       run: |
@@ -174,4 +189,3 @@ jobs:
           Target: ${{ github.event.inputs.BUILD_TARGET }}.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
