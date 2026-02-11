@@ -155,7 +155,7 @@ jobs:
       run: |
         set -ex
         
-        cd ${{ github.workspace }}
+        cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         
