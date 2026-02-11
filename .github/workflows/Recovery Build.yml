@@ -151,57 +151,66 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
-        
-    - name: Check available targets
-      run: |
-        set -ex  
-
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        source build/envsetup.sh
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-    
- 
-        echo "=== Checking device tree ==="
-        ls -la ${{ github.event.inputs.DEVICE_PATH }} || true
-    
-        echo "=== Checking build targets ==="
-        if make -n help >/dev/null 2>&1; then
-          make help | grep -i boot || true
-        else
-          echo "Using alternative target check method..."
-          find out/soong -name "*.mk" | xargs grep -l "vendor_boot" || true
-        fi
-    
- 
-        echo "=== Checking ninja targets ==="
-        if [ -f "out/build-omni_tb8786p1_64_k510_wifi.ninja" ]; then
-          ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets all | grep -i boot || true
-        fi
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Building recovery
       run: |
-        set -ex
+        set -ex 
         cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        rm -rf out/soong/.bootstrap
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng 
-        make clean 
-        rm -f out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-        for target in vendor_bootimage vendorbootimage vendor-bootimage; do
-          echo "Trying target: $target"
-        if make -n $target >/dev/null 2>&1; then
-          make $target -j$(nproc --all) && break
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+    
+        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+    
+        echo "=== Building for device: $DEVICE ==="
+    
+        make clean
+    
+        echo "=== Fixing root directory ==="
+        mkdir -p out/target/product/$DEVICE/root
+        echo "ro.build.fingerprint=generic" > out/target/product/$DEVICE/root/default.prop
+        echo "#!/system/bin/sh" > out/target/product/$DEVICE/root/init
+        chmod +x out/target/product/$DEVICE/root/init
+    
+        echo "=== Step 1: Building bootimage ==="
+        make bootimage -j$(nproc --all)
+    
+
+        if [ -f "out/target/product/$DEVICE/boot.img" ]; then
+            echo "✓ boot.img created successfully"
+            ls -lh out/target/product/$DEVICE/boot.img
+        else
+            echo "✗ boot.img not created"
+            exit 1
         fi
-        done
-        if [ ! -f "out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img" ]; then
-          echo "=== Fallback: Create vendor_boot from recovery ==="
-          cp out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img \
-         out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
+        echo "=== Step 2: Building vendorbootimage ==="
+        make vendorbootimage -j$(nproc --all) || {
+            echo "vendorbootimage target failed, trying alternative methods..."
+        
+        echo "Trying vendor_bootimage..."
+        make vendor_bootimage -j$(nproc --all) || {
+            echo "vendor_bootimage also failed, building recoveryimage instead..."
+            
+    
+            make recoveryimage -j$(nproc --all)
+            
+            if [ -f "out/target/product/$DEVICE/recovery.img" ]; then
+                echo "Creating vendor_boot.img from recovery.img"
+                cp out/target/product/$DEVICE/recovery.img \
+                   out/target/product/$DEVICE/vendor_boot.img
+            fi
+        }
+        }
+    
+        echo "=== Verification ==="
+         if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
+        echo "✓ vendor_boot.img created successfully"
+        ls -lh out/target/product/$DEVICE/vendor_boot.img
+        else
+        echo "✗ vendor_boot.img not created"
+        echo "Checking for alternative vendor boot files:"
+        ls -lh out/target/product/$DEVICE/*vendor* 2>/dev/null || true
         fi
-        echo "=== Generated images ==="
-        ls -lh out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+    
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Upload to Release
