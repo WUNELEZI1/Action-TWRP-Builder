@@ -151,6 +151,25 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
+    - name: Check available targets
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        source build/envsetup.sh
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+    
+        echo "=== Checking available build targets ==="
+        echo "Targets containing 'boot':"
+        make help 2>/dev/null | grep -i boot || echo "No boot targets found"
+    
+        echo ""
+        echo "Targets containing 'vendor':"
+        make help 2>/dev/null | grep -i vendor || echo "No vendor targets found"
+    
+        echo ""
+        echo "Targets containing 'recovery':"
+        make help 2>/dev/null | grep -i recovery || echo "No recovery targets found"
+    
+          working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Building recovery
       run: |
         set -ex 
