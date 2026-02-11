@@ -151,99 +151,60 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
-    - name: Check available targets
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        source build/envsetup.sh
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-    
-        echo "=== Checking available build targets ==="
-        echo "Targets containing 'boot':"
-        make help 2>/dev/null | grep -i boot || echo "No boot targets found"
-    
-        echo ""
-        echo "Targets containing 'vendor':"
-        make help 2>/dev/null | grep -i vendor || echo "No vendor targets found"
-    
-        echo ""
-        echo "Targets containing 'recovery':"
-        make help 2>/dev/null | grep -i recovery || echo "No recovery targets found"
-    
-          working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Building recovery
       run: |
-        set -ex 
-        cd ${{ steps.pwd.outputs.workspace-folder }}
+        set -ex
+        
+        cd ${{ github.workspace }}
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-    
-        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-    
-        echo "=== Building for device: $DEVICE ==="
-    
-        make clean
-    
-        echo "=== Fixing root directory ==="
-        mkdir -p out/target/product/$DEVICE/root
-        echo "ro.build.fingerprint=generic" > out/target/product/$DEVICE/root/default.prop
-        echo "#!/system/bin/sh" > out/target/product/$DEVICE/root/init
-        chmod +x out/target/product/$DEVICE/root/init
-    
-        echo "=== Step 1: Building bootimage ==="
-        make bootimage -j$(nproc --all)
-    
-
-        if [ -f "out/target/product/$DEVICE/boot.img" ]; then
-            echo "✓ boot.img created successfully"
-            ls -lh out/target/product/$DEVICE/boot.img
-        else
-            echo "✗ boot.img not created"
-            exit 1
-        fi
-        echo "=== Step 2: Building vendorbootimage ==="
-        make vendorbootimage -j$(nproc --all) || {
-            echo "vendorbootimage target failed, trying alternative methods..."
         
-        echo "Trying vendor_bootimage..."
-        make vendor_bootimage -j$(nproc --all) || {
-            echo "vendor_bootimage also failed, building recoveryimage instead..."
-            
-    
-            make recoveryimage -j$(nproc --all)
-            
-            if [ -f "out/target/product/$DEVICE/recovery.img" ]; then
-                echo "Creating vendor_boot.img from recovery.img"
-                cp out/target/product/$DEVICE/recovery.img \
-                   out/target/product/$DEVICE/vendor_boot.img
-            fi
-        }
-        }
-    
-        echo "=== Verification ==="
-         if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
-        echo "✓ vendor_boot.img created successfully"
-        ls -lh out/target/product/$DEVICE/vendor_boot.img
+        breakfast twrp_${{ github.event.inputs.device_name }}-eng
+        
+        DEVICE="${{ github.event.inputs.device_name }}"
+        
+        echo "=== Building recovery for $DEVICE ==="
+        
+        make clean
+        
+        echo "Building bootimage..."
+        make bootimage -j$(nproc --all)
+        
+        echo "Building vendorbootimage..."
+        mka vendorbootimage -j$(nproc --all)
+        
+        echo "=== Build results ==="
+        ls -la out/target/product/$DEVICE/
+        
+        if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
+          echo "Build successful!"
         else
-        echo "✗ vendor_boot.img not created"
-        echo "Checking for alternative vendor boot files:"
-        ls -lh out/target/product/$DEVICE/*vendor* 2>/dev/null || true
+          echo "Build failed - vendor_boot.img not found"
+          exit 1
         fi
-    
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload recovery artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-recovery-${{ github.event.inputs.device_name }}
+        path: |
+          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
+          out/target/product/${{ github.event.inputs.device_name }}/boot.img
+        retention-days: 7
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        files: |
+          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/boot.img
+          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
+          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
         name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
           Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          Build Type: TWRP Vendor Boot
+          Flash Command: fastboot flash vendor_boot:recovery recovery.cpio.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
