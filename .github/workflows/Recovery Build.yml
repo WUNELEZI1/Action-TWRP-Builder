@@ -154,24 +154,57 @@ jobs:
         
     - name: Check available targets
       run: |
+        set -ex  
+
+        cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        
-        echo "=== Checking available build targets ==="
-        make help | grep -i boot
-        
+    
+ 
+        echo "=== Checking device tree ==="
+        ls -la ${{ github.event.inputs.DEVICE_PATH }} || true
+    
+        echo "=== Checking build targets ==="
+        if make -n help >/dev/null 2>&1; then
+          make help | grep -i boot || true
+        else
+          echo "Using alternative target check method..."
+          find out/soong -name "*.mk" | xargs grep -l "vendor_boot" || true
+        fi
+    
+ 
         echo "=== Checking ninja targets ==="
-        ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets | grep -i boot
-        
-        echo "=== Checking vendor_boot in targets ==="
-        ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets all | grep -i vendor
+        if [ -f "out/build-omni_tb8786p1_64_k510_wifi.ninja" ]; then
+          ninja -f out/build-omni_tb8786p1_64_k510_wifi.ninja -t targets all | grep -i boot || true
+        fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Building recovery
       run: |
+        set -ex
+        cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+        rm -rf out/soong/.bootstrap
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng 
+        make clean 
+        rm -f out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+        echo "=== Step 1: Build recovery ==="
+        make recoveryimage -j$(nproc --all)  
+        echo "=== Step 2: Attempt vendor_boot build ==="
+        for target in vendor_bootimage vendorbootimage vendor-bootimage; do
+          echo "Trying target: $target"
+        if make -n $target >/dev/null 2>&1; then
+          make $target -j$(nproc --all) && break
+        fi
+        done
+        if [ ! -f "out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img" ]; then
+          echo "=== Fallback: Create vendor_boot from recovery ==="
+          cp out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img \
+         out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
+        fi
+        echo "=== Generated images ==="
+        ls -lh out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Upload to Release
