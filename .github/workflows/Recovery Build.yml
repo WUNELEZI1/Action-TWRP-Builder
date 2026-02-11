@@ -189,9 +189,6 @@ jobs:
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng 
         make clean 
         rm -f out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-        echo "=== Step 1: Build recovery ==="
-        make recoveryimage -j$(nproc --all)  
-        echo "=== Step 2: Attempt vendor_boot build ==="
         for target in vendor_bootimage vendorbootimage vendor-bootimage; do
           echo "Trying target: $target"
         if make -n $target >/dev/null 2>&1; then
