@@ -154,76 +154,64 @@ jobs:
     - name: Building recovery
       run: |
         set -ex
-        
+    
         cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        
-        # 使用小写变量名
+    
         DEVICE="${{ github.event.inputs.device_name }}"
-        
-        # 编译配置
+    
         breakfast "twrp_${DEVICE}-eng"
-        
+    
         echo "=== Step 1: Building boot.img ==="
         echo "This will generate the main TWRP boot image"
-        make clean-boot 2>/dev/null || true
-        make bootimage -j$(nproc --all)
-        
-        # 检查boot.img是否生成
+        mka bootimage -j$(nproc --all)
+    
         if [ -f "out/target/product/$DEVICE/boot.img" ]; then
           echo "✅ boot.img generated successfully"
           echo "📦 Size: $(du -h out/target/product/$DEVICE/boot.img | cut -f1)"
         else
           echo "❌ boot.img build failed"
-          exit 1
+        exit 1
         fi
-        
+    
         echo "=== Step 2: Building vendor_boot.img ==="
         echo "This will generate the modular recovery ramdisk for header v4"
-        make clean-vendor-boot 2>/dev/null || true
-        mka vendorbootimage
-        
+        mka vendorbootimage -j$(nproc --all)
+    
         echo "=== Build Results ==="
         ls -la out/target/product/$DEVICE/
-        
-        # 检查vendor_boot.img是否生成
+    
         if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
           echo "✅ vendor_boot.img generated successfully"
           echo "📦 boot.img: $(du -h out/target/product/$DEVICE/boot.img | cut -f1)"
           echo "📦 vendor_boot.img: $(du -h out/target/product/$DEVICE/vendor_boot.img | cut -f1)"
-          
-          # 提取recovery ramdisk并压缩为gz格式
+      
           echo "=== Step 3: Extracting recovery.cpio.gz ==="
           cd out/target/product/$DEVICE/
-          
-          # 从vendor_boot.img中提取recovery ramdisk
-          if [ -f "vendor_boot.img" ]; then
-            # 使用unpack_bootimg或mkbootimg工具提取
-            cp ramdisk.img recovery.cpio 2>/dev/null || true
-            if [ -f "ramdisk.img" ]; then
-              gzip -9 -c ramdisk.img > recovery.cpio.gz
-              echo "✅ recovery.cpio.gz generated"
-              echo "📦 recovery.cpio.gz: $(du -h recovery.cpio.gz | cut -f1)"
-              
-              # 显示刷机命令
-              echo ""
-              echo "=== Flash Commands ==="
-              echo "fastboot flash boot boot.img"
-              echo "fastboot flash vendor_boot:recovery recovery.cpio.gz"
-              echo ""
-            fi
+      
+          if [ -f "vendor_boot.img" ] && [ -f "ramdisk.img" ]; then
+            gzip -9 -c ramdisk.img > recovery.cpio.gz
+            echo "✅ recovery.cpio.gz generated"
+            echo "📦 recovery.cpio.gz: $(du -h recovery.cpio.gz | cut -f1)"
           fi
-          
+      
           cd ${{ steps.pwd.outputs.workspace-folder }}
         else
           echo "❌ Build failed - vendor_boot.img not found"
           echo "Checking for error logs..."
           find out/error_logs -type f -name "*.log" 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
+      
+          echo "=== Debug Information ==="
+          echo "Checking if vendor_boot target exists:"
+          make help | grep -i vendor_boot || true
+          echo ""
+          echo "Checking BOARD_VENDOR_BOOT setting:"
+          get_build_var BOARD_VENDOR_BOOT || true
+      
           exit 1
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
       with:
