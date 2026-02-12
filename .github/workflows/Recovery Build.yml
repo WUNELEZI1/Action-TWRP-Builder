@@ -161,7 +161,7 @@ jobs:
     
         DEVICE="${{ github.event.inputs.device_name }}"
     
-        breakfast "twrp_${DEVICE}-eng"
+        lunch "twrp_${DEVICE}-eng"
     
         echo "=== Step 1: Building boot.img ==="
         echo "This will generate the main TWRP boot image"
