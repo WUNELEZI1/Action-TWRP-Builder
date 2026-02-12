@@ -163,7 +163,7 @@ jobs:
         DEVICE="${{ github.event.inputs.device_name }}"
         
         # 编译配置
-        breakfast "omni_${DEVICE}-eng"
+        breakfast "twrp_${DEVICE}-eng"
         
         echo "=== Step 1: Building boot.img ==="
         echo "This will generate the main TWRP boot image"
@@ -256,21 +256,6 @@ jobs:
           - `boot.img` - TWRP boot image
           - `vendor_boot.img` - Complete vendor_boot partition
           - `recovery.cpio.gz` - Modular recovery ramdisk only
-          
-          ## 📱 Flash Instructions
-          
-          ### Method 1: Flash full vendor_boot (Recommended)
-          ```bash
-          fastboot flash boot boot.img
-          fastboot flash vendor_boot vendor_boot.img
-          ```
-          
-          ### Method 2: Flash modular ramdisk only
-          ```bash
-          fastboot flash boot boot.img
-          fastboot flash vendor_boot:recovery recovery.cpio.gz
-          ```
-          
           ## 🔧 Build Information
           - Manifest: ${{ github.event.inputs.MANIFEST_URL }}
           - Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
