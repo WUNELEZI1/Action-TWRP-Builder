@@ -150,8 +150,6 @@ jobs:
           echo "include build/make/core/vendor_boot.mk" >> build/make/core/Makefile
         fi
     
-        echo "BOARD_VENDOR_BOOT := true" >> device/zyb/$DEVICE/BoardConfig.mk
-        echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 0x4000000" >> device/zyb/$DEVICE/BoardConfig.mk
     
         echo "=== Patch complete ==="
     - name: Clone device tree
