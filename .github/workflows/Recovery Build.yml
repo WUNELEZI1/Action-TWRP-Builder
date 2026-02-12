@@ -151,6 +151,83 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
+    - name: Diagnose Build System
+      run: |
+        set -ex
+        
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        
+        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+        
+        echo "========== 1. SYSTEM INFORMATION =========="
+        echo "Android Version: $(get_build_var PLATFORM_VERSION)"
+        echo "Build ID: $(get_build_var BUILD_ID)"
+        echo "TARGET_PRODUCT: $(get_build_var TARGET_PRODUCT)"
+        echo ""
+        
+        echo "========== 2. DEVICE CONFIGURATION =========="
+        echo "BoardConfig.mk location:"
+        ls -la device/zyb/$DEVICE/BoardConfig.mk || true
+        echo ""
+        echo "BOARD_VENDOR_BOOT: $(get_build_var BOARD_VENDOR_BOOT)"
+        echo "BOARD_BOOT_HEADER_VERSION: $(get_build_var BOARD_BOOTLOADER_HEADER_VERSION)"
+        echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE: $(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
+        echo "BOARD_VENDOR_BOOT_DTB_SIZE: $(get_build_var BOARD_VENDOR_BOOT_DTB_SIZE)"
+        echo "BOARD_VENDOR_RAMDISK_TYPE: $(get_build_var BOARD_VENDOR_RAMDISK_TYPE)"
+        echo ""
+        
+        echo "========== 3. MAKE HELP - ALL TARGETS =========="
+        echo "Total make targets (first 50):"
+        make help | head -100 | grep -E "^[a-zA-Z]" | sort | uniq | head -50
+        echo ""
+        
+        echo "========== 4. VENDOR_BOOT RELATED TARGETS =========="
+        echo "Searching for vendor_boot/vendorboot/vendor-boot targets:"
+        make help | grep -E "vendor.*boot|boot.*vendor|vendorboot|vendor_boot|vendor-boot" | sort | uniq
+        echo ""
+        
+        echo "========== 5. MKA COMMAND ANALYSIS =========="
+        echo "mka is an alias for:"
+        type mka || true
+        echo ""
+        echo "Finding mka definition:"
+        grep -r "mka()" vendor/twrp/build/ build/make/ || true
+        grep -r "function mka" vendor/twrp/build/ build/make/ || true
+        echo ""
+        
+        echo "========== 6. NINJA BUILD FILES =========="
+        echo "Checking for ninja build files:"
+        find out -name "*.ninja" 2>/dev/null | head -20 || true
+        echo ""
+        
+        echo "========== 7. VENDOR_BOOT BUILD SCRIPTS =========="
+        echo "Looking for vendor_boot build scripts:"
+        find build/make -name "*vendor*boot*" 2>/dev/null || true
+        find vendor/twrp/build -name "*vendor*boot*" 2>/dev/null || true
+        find bootable/recovery -name "*vendor*boot*" 2>/dev/null || true
+        echo ""
+        
+        echo "========== 8. BUILD CACHE STATUS =========="
+        echo "Current build cache:"
+        ls -la out/target/product/$DEVICE/ 2>/dev/null || echo "No build yet"
+        echo ""
+        
+        echo "========== 9. LUNCH MENU =========="
+        echo "Available lunch combos:"
+        lunch | grep -i $DEVICE || true
+        echo ""
+        
+        echo "========== 10. PRODUCT CONFIGURATION =========="
+        echo "Product makefile:"
+        cat device/zyb/$DEVICE/AndroidProducts.mk || true
+        echo ""
+        echo "Product configuration:"
+        cat device/zyb/$DEVICE/twrp_$DEVICE.mk | grep -E "PRODUCT_NAME|PRODUCT_DEVICE|TW_BUILD_VENDOR_BOOT" || true
+        echo ""
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Building recovery
       run: |
         set -ex
@@ -227,6 +304,8 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
+          ${{ steps.pwd.outputs.workspace-folder }}/out/error_logs/
+          ${{ steps.pwd.outputs.workspace-folder }}/out/build-twrp_*.ninja
           out/target/product/${{ github.event.inputs.device_name }}/boot.img
           out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
           out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
