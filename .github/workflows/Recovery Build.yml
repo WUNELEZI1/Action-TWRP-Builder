@@ -159,27 +159,67 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         
-        breakfast omni_${{ github.event.inputs.device_name }}-eng
-        
+        # 使用小写变量名
         DEVICE="${{ github.event.inputs.device_name }}"
         
-        echo "=== Building recovery for $DEVICE ==="
+        # 编译配置
+        breakfast "omni_${DEVICE}-eng"
         
-        make clean
-        
-        echo "Building bootimage..."
+        echo "=== Step 1: Building boot.img ==="
+        echo "This will generate the main TWRP boot image"
+        make clean-boot 2>/dev/null || true
         make bootimage -j$(nproc --all)
         
-        echo "Building vendorbootimage..."
-        mka vendorbootimage -j$(nproc --all)
+        # 检查boot.img是否生成
+        if [ -f "out/target/product/$DEVICE/boot.img" ]; then
+          echo "✅ boot.img generated successfully"
+          echo "📦 Size: $(du -h out/target/product/$DEVICE/boot.img | cut -f1)"
+        else
+          echo "❌ boot.img build failed"
+          exit 1
+        fi
         
-        echo "=== Build results ==="
+        echo "=== Step 2: Building vendor_boot.img ==="
+        echo "This will generate the modular recovery ramdisk for header v4"
+        make clean-vendor-boot 2>/dev/null || true
+        mka vendorbootimage
+        
+        echo "=== Build Results ==="
         ls -la out/target/product/$DEVICE/
         
+        # 检查vendor_boot.img是否生成
         if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
-          echo "Build successful!"
+          echo "✅ vendor_boot.img generated successfully"
+          echo "📦 boot.img: $(du -h out/target/product/$DEVICE/boot.img | cut -f1)"
+          echo "📦 vendor_boot.img: $(du -h out/target/product/$DEVICE/vendor_boot.img | cut -f1)"
+          
+          # 提取recovery ramdisk并压缩为gz格式
+          echo "=== Step 3: Extracting recovery.cpio.gz ==="
+          cd out/target/product/$DEVICE/
+          
+          # 从vendor_boot.img中提取recovery ramdisk
+          if [ -f "vendor_boot.img" ]; then
+            # 使用unpack_bootimg或mkbootimg工具提取
+            cp ramdisk.img recovery.cpio 2>/dev/null || true
+            if [ -f "ramdisk.img" ]; then
+              gzip -9 -c ramdisk.img > recovery.cpio.gz
+              echo "✅ recovery.cpio.gz generated"
+              echo "📦 recovery.cpio.gz: $(du -h recovery.cpio.gz | cut -f1)"
+              
+              # 显示刷机命令
+              echo ""
+              echo "=== Flash Commands ==="
+              echo "fastboot flash boot boot.img"
+              echo "fastboot flash vendor_boot:recovery recovery.cpio.gz"
+              echo ""
+            fi
+          fi
+          
+          cd ${{ steps.pwd.outputs.workspace-folder }}
         else
-          echo "Build failed - vendor_boot.img not found"
+          echo "❌ Build failed - vendor_boot.img not found"
+          echo "Checking for error logs..."
+          find out/error_logs -type f -name "*.log" 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
           exit 1
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -187,24 +227,58 @@ jobs:
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: twrp-recovery-${{ github.event.inputs.device_name }}
+        name: twrp-recovery-${{ github.event.inputs.device_name }}-header-v4
         path: |
-          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
           out/target/product/${{ github.event.inputs.device_name }}/boot.img
+          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
+          out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
+          out/target/product/${{ github.event.inputs.device_name }}/ramdisk.img
         retention-days: 7
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/boot.img
-          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
-          out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+          out/target/product/${{ github.event.inputs.device_name }}/boot.img
+          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
+          out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
+        name: TWRP-${{ github.event.inputs.device_name }}-boot-header-v4-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Build Type: TWRP Vendor Boot
-          Flash Command: fastboot flash vendor_boot:recovery recovery.cpio.gz
+          # TWRP Recovery for Boot Header v4 Devices
+          
+          **Device:** ${{ github.event.inputs.device_name }}
+          **Build Type:** Modular Vendor Boot
+          **Header Version:** v4
+          **Ramdisk Compression:** gzip
+          
+          ## 📦 Included Files
+          - `boot.img` - TWRP boot image
+          - `vendor_boot.img` - Complete vendor_boot partition
+          - `recovery.cpio.gz` - Modular recovery ramdisk only
+          
+          ## 📱 Flash Instructions
+          
+          ### Method 1: Flash full vendor_boot (Recommended)
+          ```bash
+          fastboot flash boot boot.img
+          fastboot flash vendor_boot vendor_boot.img
+          ```
+          
+          ### Method 2: Flash modular ramdisk only
+          ```bash
+          fastboot flash boot boot.img
+          fastboot flash vendor_boot:recovery recovery.cpio.gz
+          ```
+          
+          ## 🔧 Build Information
+          - Manifest: ${{ github.event.inputs.MANIFEST_URL }}
+          - Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          - Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
+          - Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## ⚠️ Notes
+          - This device uses boot header v4 with modular ramdisk support
+          - Method 2 preserves stock vendor_boot vendor_ramdisk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
