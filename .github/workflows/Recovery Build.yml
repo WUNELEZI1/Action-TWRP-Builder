@@ -151,6 +151,25 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
+    - name: Check lunch version
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        source build/envsetup.sh
+    
+        echo "=== Lunch version info ==="
+  
+        type lunch
+    
+    
+        lunch -h 2>/dev/null || true
+    
+   
+        echo "=== Available products ==="
+        list_products 2>/dev/null || echo "list_products not available"
+    
+
+        echo "=== Available releases ==="
+        list_releases 2>/dev/null || echo "list_releases not available"
     - name: Diagnose Build System
       run: |
         set -ex  
