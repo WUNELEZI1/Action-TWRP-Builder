@@ -159,7 +159,7 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         
-        breakfast twrp_${{ github.event.inputs.device_name }}-eng
+        breakfast ${{ github.event.inputs.device_name }}-eng
         
         DEVICE="${{ github.event.inputs.device_name }}"
         
