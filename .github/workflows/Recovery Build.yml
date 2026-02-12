@@ -153,14 +153,13 @@ jobs:
         swap-size-gb: 12
     - name: Diagnose Build System
       run: |
-        set -ex
-        
+        set -ex  
         cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        
-        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-        
+        export ALLOW_MISSING_DEPENDENCIES=true    
+        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"    
+        echo "=== Setting up build environment ==="
+        lunch "twrp_${DEVICE}-eng"
         echo "========== 1. SYSTEM INFORMATION =========="
         echo "Android Version: $(get_build_var PLATFORM_VERSION)"
         echo "Build ID: $(get_build_var BUILD_ID)"
