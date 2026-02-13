@@ -246,10 +246,6 @@ jobs:
         mka ramdisk -j$(nproc --all)
 
         echo "=== Building vendor_boot.img ==="
-        if mka vendorbootimage -j$(nproc --all); then
-            echo "✅ vendorbootimage succeeded!"
-        else
-            echo "❌ vendorbootimage failed, trying manual method..."
             cd out/target/product/$DEVICE/
             cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
         mkbootimg \
@@ -263,8 +259,6 @@ jobs:
           --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
           --output vendor_boot.img
             echo "✅ Manual vendor_boot.img created!"
-        fi
-
         echo "=== Creating recovery.cpio.gz ==="
         cd out/target/product/$DEVICE/
         gzip -9 -c ramdisk.img > recovery.cpio.gz
