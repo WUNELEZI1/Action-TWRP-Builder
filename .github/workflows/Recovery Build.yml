@@ -245,16 +245,15 @@ jobs:
         mka ramdisk -j$(nproc --all)
     
         echo "=== Building vendor_boot.img ==="
-        mka vendorbootimage -j$(nproc --all) || {
-        echo "❌ vendorbootimage failed, trying manual method..."
-      
-  
-        cd out/target/product/$DEVICE/
-      
- 
-        cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
-      
-  
+        if mka vendorbootimage -j$(nproc --all); then
+            echo "✅ vendorbootimage succeeded!"
+        else
+            echo "❌ vendorbootimage failed, trying manual method..."
+    
+            cd out/target/product/$DEVICE/
+    
+            cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
+    
         mkbootimg \
         --header_version 4 \
         --pagesize 4096 \
@@ -265,9 +264,10 @@ jobs:
         --ramdisk ramdisk.img \
         --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
         --output vendor_boot.img
-      
-        echo "✅ Manual vendor_boot.img created!"
-        ls -la vendor_boot.img
+    
+          echo "✅ Manual vendor_boot.img created!"
+          ls -la vendor_boot.img
+        fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
