@@ -238,57 +238,57 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         DEVICE="${{ github.event.inputs.device_name }}"
-    
-        breakfast "twrp_${DEVICE}-eng"
-    
-        echo "=== Building ramdisk.img ==="
+
+        breakfast "twrp_${DEVICE}-eng"    
+        echo "=== Building boot.img ==="
+        mka bootimage -j$(nproc --all)
+        echo "=== Building ramdisk.img ==="    
         mka ramdisk -j$(nproc --all)
-    
+
         echo "=== Building vendor_boot.img ==="
         if mka vendorbootimage -j$(nproc --all); then
             echo "✅ vendorbootimage succeeded!"
         else
             echo "❌ vendorbootimage failed, trying manual method..."
-    
             cd out/target/product/$DEVICE/
-    
             cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
-    
         mkbootimg \
-        --header_version 4 \
-        --pagesize 4096 \
-        --dtb_offset 0x1c000000 \
-        --ramdisk_offset 0x4000000 \
-        --tags_offset 0x00000100 \
-        --dtb dtb.img \
-        --ramdisk ramdisk.img \
-        --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
-        --output vendor_boot.img
-    
-          echo "✅ Manual vendor_boot.img created!"
-          ls -la vendor_boot.img
+          --header_version 4 \
+          --pagesize 4096 \
+          --dtb_offset 0x1c000000 \
+          --ramdisk_offset 0x4000000 \
+          --tags_offset 0x00000100 \
+          --dtb dtb.img \
+          --ramdisk ramdisk.img \
+          --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
+          --output vendor_boot.img
+            echo "✅ Manual vendor_boot.img created!"
         fi
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+        echo "=== Creating recovery.cpio.gz ==="
+        cd out/target/product/$DEVICE/
+        gzip -9 -c ramdisk.img > recovery.cpio.gz
+        ls -la boot.img vendor_boot.img ramdisk.img recovery.cpio.gz
+        cd ${{ steps.pwd.outputs.workspace-folder }}
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
       with:
         name: twrp-recovery-${{ github.event.inputs.device_name }}-header-v4
         path: |
-          out/target/product/${{ github.event.inputs.device_name }}/boot.img
-          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
-          out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
-          out/target/product/${{ github.event.inputs.device_name }}/ramdisk.img
-        retention-days: 7
-
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/boot.img
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/ramdisk.img
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
+          retention-days: 7
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
           ${{ steps.pwd.outputs.workspace-folder }}/out/error_logs/
           ${{ steps.pwd.outputs.workspace-folder }}/out/build-twrp_*.ninja
-          out/target/product/${{ github.event.inputs.device_name }}/boot.img
-          out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
-          out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/boot.img
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
+          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
         name: TWRP-${{ github.event.inputs.device_name }}-boot-header-v4-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
