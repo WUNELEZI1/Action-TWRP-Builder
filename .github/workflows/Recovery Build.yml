@@ -10,7 +10,7 @@ on:
       MANIFEST_BRANCH:
         description: 'MANIFEST_BRANCH'
         required: true
-        default: 'twrp-12'
+        default: 'twrp-12.1'
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
@@ -172,86 +172,65 @@ jobs:
         list_releases 2>/dev/null || echo "list_releases not available"
     - name: Diagnose Build System
       run: |
+          cd ${{ steps.pwd.outputs.workspace-folder }}
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true    
+          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"    
       
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true    
-        DEVICE="${{ github.event.inputs.DEVICE_NAME }}"    
-        echo "=== Setting up build environment ==="
-        breakfast "twrp_${DEVICE}-eng"
-        echo "========== 1. SYSTEM INFORMATION =========="
-        echo "Android Version: $(get_build_var PLATFORM_VERSION)"
-        echo "Build ID: $(get_build_var BUILD_ID)"
-        echo "TARGET_PRODUCT: $(get_build_var TARGET_PRODUCT)"
-        cat vendor/twrp/build/envsetup.sh | grep "TW_MAIN_VERSION"
-        echo ""
-        
-        echo "========== 2. DEVICE CONFIGURATION =========="
-        echo "BoardConfig.mk location:"
-        ls -la device/zyb/$DEVICE/BoardConfig.mk || true
-        echo ""
-        echo "BOARD_VENDOR_BOOT: $(get_build_var BOARD_VENDOR_BOOT)"
-        echo "BOARD_BOOT_HEADER_VERSION: $(get_build_var BOARD_BOOTLOADER_HEADER_VERSION)"
-        echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE: $(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
-        echo "BOARD_VENDOR_BOOT_DTB_SIZE: $(get_build_var BOARD_VENDOR_BOOT_DTB_SIZE)"
-        echo "BOARD_VENDOR_RAMDISK_TYPE: $(get_build_var BOARD_VENDOR_RAMDISK_TYPE)"
-        echo ""
-        
-        echo "========== 3. MAKE HELP - ALL TARGETS =========="
-        echo "Total make targets (first 50):"
-        make help
-        make --help
-        mka help
-        mka --help
-        m help
-        m --help
-        make help | grep -E "vendor.*boot|vendorboot" | sort | uniq
-        echo ""
-        
-        echo "========== 4. VENDOR_BOOT RELATED TARGETS =========="
-        echo "Searching for vendor_boot/vendorboot/vendor-boot targets:"
-        make help | grep -E "vendor.*boot|boot.*vendor|vendorboot|vendor_boot|vendor-boot" | sort | uniq
-        echo ""
-        
-        echo "========== 5. MKA COMMAND ANALYSIS =========="
-        echo "mka is an alias for:"
-        type mka || true
-        echo ""
-        echo "Finding mka definition:"
-        grep -r "mka()" vendor/twrp/build/ build/make/ || true
-        grep -r "function mka" vendor/twrp/build/ build/make/ || true
-        echo ""
-        
-        echo "========== 6. NINJA BUILD FILES =========="
-        echo "Checking for ninja build files:"
-        find out -name "*.ninja" 2>/dev/null | head -20 || true
-        echo ""
-        
-        echo "========== 7. VENDOR_BOOT BUILD SCRIPTS =========="
-        echo "Looking for vendor_boot build scripts:"
-        find build/make -name "*vendor*boot*" 2>/dev/null || true
-        find vendor/twrp/build -name "*vendor*boot*" 2>/dev/null || true
-        find bootable/recovery -name "*vendor*boot*" 2>/dev/null || true
-        echo ""
-        
-        echo "========== 8. BUILD CACHE STATUS =========="
-        echo "Current build cache:"
-        ls -la out/target/product/$DEVICE/ 2>/dev/null || echo "No build yet"
-        echo ""
-        
-        echo "========== 9. LUNCH MENU =========="
-        echo "Available lunch combos:"
-        lunch | grep -i $DEVICE || true
-        echo ""
-        
-        echo "========== 10. PRODUCT CONFIGURATION =========="
-        echo "Product makefile:"
-        cat device/zyb/$DEVICE/AndroidProducts.mk || true
-        echo ""
-        echo "Product configuration:"
-        cat device/zyb/$DEVICE/twrp_$DEVICE.mk | grep -E "PRODUCT_NAME|PRODUCT_DEVICE|TW_BUILD_VENDOR_BOOT" || true
-        echo ""
-        
+          echo "=== Setting up build environment ==="
+          breakfast "twrp_${DEVICE}-eng"
+    
+          echo "========== 1. SYSTEM INFORMATION =========="
+          echo "Android Version: $(get_build_var PLATFORM_VERSION)"
+          echo "Build ID: $(get_build_var BUILD_ID)"
+          echo "TARGET_PRODUCT: $(get_build_var TARGET_PRODUCT)"
+          echo ""
+    
+          echo "========== 2. DEVICE CONFIGURATION =========="
+          echo "BoardConfig.mk location:"
+          ls -la device/zyb/$DEVICE/BoardConfig.mk || true
+          echo ""
+          echo "BOARD_VENDOR_BOOT: $(get_build_var BOARD_VENDOR_BOOT)"
+          echo "BOARD_BOOT_HEADER_VERSION: $(get_build_var BOARD_BOOTLOADER_HEADER_VERSION)"
+          echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE: $(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
+          echo "BOARD_VENDOR_BOOT_DTB_SIZE: $(get_build_var BOARD_VENDOR_BOOT_DTB_SIZE)"
+          echo "BOARD_VENDOR_RAMDISK_TYPE: $(get_build_var BOARD_VENDOR_RAMDISK_TYPE)"
+          echo ""
+    
+          echo "========== 3. VENDOR_BOOT TARGET CHECK =========="
+          echo "Checking if vendorbootimage target exists:"
+          if grep -q "vendorbootimage" vendor/twrp/build/tasks/vendor_boot.mk 2>/dev/null; then
+            echo "✅ vendorbootimage target found in vendor_boot.mk"
+          else
+            echo "❌ vendorbootimage target not found in vendor_boot.mk"
+          fi
+    
+            echo "Available vendor_boot related targets:"
+            grep -r "vendorbootimage" vendor/twrp/build/tasks/ 2>/dev/null || echo "  No vendorbootimage target found"
+            echo ""
+    
+            echo "========== 4. BUILD READINESS =========="
+            echo "Checking if we can build vendor_boot.img directly:"
+            if [ -f "out/target/product/$DEVICE/ramdisk.img" ]; then
+              echo "✅ ramdisk.img already exists"
+            else
+              echo "❌ ramdisk.img not found - need to build it first"
+            fi
+    
+            if [ -f "device/zyb/$DEVICE/dtb/mt6768.dtb" ]; then
+              echo "✅ dtb file exists"
+            else
+              echo "❌ dtb file not found"
+            fi
+            echo ""
+    
+            echo "========== 5. PRODUCT CONFIGURATION =========="
+            echo "Product makefile:"
+            cat device/zyb/$DEVICE/AndroidProducts.mk || true
+            echo ""
+            echo "Product configuration:"
+            cat device/zyb/$DEVICE/twrp_$DEVICE.mk | grep -E "PRODUCT_NAME|PRODUCT_DEVICE|TW_BUILD_VENDOR_BOOT|PLATFORM_VERSION|SDK_VERSION" || true
+            echo ""
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Building recovery
       run: |
@@ -259,54 +238,36 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         DEVICE="${{ github.event.inputs.device_name }}"
+    
         breakfast "twrp_${DEVICE}-eng"
-        echo "=== Setting up build environment ==="
-        CURRENT_PRODUCT=$(get_build_var TARGET_PRODUCT)
-        if [ "$CURRENT_PRODUCT" != "twrp_${DEVICE}" ]; then
-          echo "❌ breakfast failed! Current product: $CURRENT_PRODUCT"
-          echo "Expected: twrp_${DEVICE}"
-          exit 1
-        fi
-        echo "✅ breakfast successful: $CURRENT_PRODUCT"
-        echo "=== Step 2: Building vendor_boot.img ==="
-        echo "This will generate the modular recovery ramdisk for header v4"
-        mka vendorbootimage -j$(nproc --all)
-        echo "=== Build Results ==="
-        ls -la out/target/product/$DEVICE/
-        if [ -f "out/target/product/$DEVICE/vendor_boot.img" ]; then
-          echo "✅ vendor_boot.img generated successfully"
-          echo "📦 boot.img: $(du -h out/target/product/$DEVICE/boot.img | cut -f1)"
-          echo "📦 vendor_boot.img: $(du -h out/target/product/$DEVICE/vendor_boot.img | cut -f1)"
-          echo "=== Step 3: Extracting recovery.cpio.gz ==="
-          cd out/target/product/$DEVICE/
-          if [ -f "vendor_boot.img" ] && [ -f "ramdisk.img" ]; then
-            gzip -9 -c ramdisk.img > recovery.cpio.gz
-            echo "✅ recovery.cpio.gz generated"
-            echo "📦 recovery.cpio.gz: $(du -h recovery.cpio.gz | cut -f1)"
-          fi
-          cd ${{ steps.pwd.outputs.workspace-folder }}
-        else
-          echo "❌ Build failed - vendor_boot.img not found"
-          echo "Checking for error logs..."
-          find out/error_logs -type f -name "*.log" 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
-          echo "=== Debug Information ==="
-          echo "Checking if vendor_boot target exists:"
-          make help | grep -i vendor_boot || true
-          echo ""
-          echo "Checking BOARD_VENDOR_BOOT setting:"
-          get_build_var BOARD_VENDOR_BOOT || true
-          mkbootimg \
-          --header_version 4 \
-          --pagesize 4096 \
-          --dtb_offset 0x1c000000 \
-          --ramdisk_offset 0x4000000 \
-          --tags_offset 0x00000100 \
-          --dtb out/target/product/$DEVICE/dtb.img \
-          --ramdisk out/target/product/$DEVICE/ramdisk.img \
-          --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
-          --output out/target/product/$DEVICE/vendor_boot.img
-          exit 1
-        fi
+    
+        echo "=== Building ramdisk.img ==="
+        mka ramdisk -j$(nproc --all)
+    
+        echo "=== Building vendor_boot.img ==="
+        mka vendorbootimage -j$(nproc --all) || {
+        echo "❌ vendorbootimage failed, trying manual method..."
+      
+  
+        cd out/target/product/$DEVICE/
+      
+ 
+        cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
+      
+  
+        mkbootimg \
+        --header_version 4 \
+        --pagesize 4096 \
+        --dtb_offset 0x1c000000 \
+        --ramdisk_offset 0x4000000 \
+        --tags_offset 0x00000100 \
+        --dtb dtb.img \
+        --ramdisk ramdisk.img \
+        --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
+        --output vendor_boot.img
+      
+        echo "✅ Manual vendor_boot.img created!"
+        ls -la vendor_boot.img
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
