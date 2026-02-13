@@ -155,19 +155,11 @@ jobs:
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
         source build/envsetup.sh
-    
         echo "=== Lunch version info ==="
-  
         type lunch
-    
-    
         lunch -h 2>/dev/null || true
-    
-   
         echo "=== Available products ==="
         list_products 2>/dev/null || echo "list_products not available"
-    
-
         echo "=== Available releases ==="
         list_releases 2>/dev/null || echo "list_releases not available"
     - name: Diagnose Build System
@@ -176,16 +168,13 @@ jobs:
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true    
           DEVICE="${{ github.event.inputs.DEVICE_NAME }}"    
-      
           echo "=== Setting up build environment ==="
           breakfast "twrp_${DEVICE}-eng"
-    
           echo "========== 1. SYSTEM INFORMATION =========="
           echo "Android Version: $(get_build_var PLATFORM_VERSION)"
           echo "Build ID: $(get_build_var BUILD_ID)"
           echo "TARGET_PRODUCT: $(get_build_var TARGET_PRODUCT)"
           echo ""
-    
           echo "========== 2. DEVICE CONFIGURATION =========="
           echo "BoardConfig.mk location:"
           ls -la device/zyb/$DEVICE/BoardConfig.mk || true
@@ -196,7 +185,6 @@ jobs:
           echo "BOARD_VENDOR_BOOT_DTB_SIZE: $(get_build_var BOARD_VENDOR_BOOT_DTB_SIZE)"
           echo "BOARD_VENDOR_RAMDISK_TYPE: $(get_build_var BOARD_VENDOR_RAMDISK_TYPE)"
           echo ""
-    
           echo "========== 3. VENDOR_BOOT TARGET CHECK =========="
           echo "Checking if vendorbootimage target exists:"
           if grep -q "vendorbootimage" vendor/twrp/build/tasks/vendor_boot.mk 2>/dev/null; then
@@ -204,11 +192,9 @@ jobs:
           else
             echo "❌ vendorbootimage target not found in vendor_boot.mk"
           fi
-    
             echo "Available vendor_boot related targets:"
             grep -r "vendorbootimage" vendor/twrp/build/tasks/ 2>/dev/null || echo "  No vendorbootimage target found"
             echo ""
-    
             echo "========== 4. BUILD READINESS =========="
             echo "Checking if we can build vendor_boot.img directly:"
             if [ -f "out/target/product/$DEVICE/ramdisk.img" ]; then
@@ -216,14 +202,12 @@ jobs:
             else
               echo "❌ ramdisk.img not found - need to build it first"
             fi
-    
             if [ -f "device/zyb/$DEVICE/dtb/mt6768.dtb" ]; then
               echo "✅ dtb file exists"
             else
               echo "❌ dtb file not found"
             fi
             echo ""
-    
             echo "========== 5. PRODUCT CONFIGURATION =========="
             echo "Product makefile:"
             cat device/zyb/$DEVICE/AndroidProducts.mk || true
@@ -238,20 +222,14 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         DEVICE="${{ github.event.inputs.device_name }}"
-
         breakfast "twrp_${DEVICE}-eng"    
-    
         echo "=== Building boot.img ==="
         mka bootimage -j$(nproc --all)
-
         echo "=== Building vendor_boot.img ==="
         cd out/target/product/$DEVICE/
-    
         cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/prebuilt/recovery_ramdisk.gz .
         gunzip -c recovery_ramdisk.gz > ramdisk.cpio
-    
         cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
-    
         mkbootimg \
         --header_version 4 \
         --pagesize 4096 \
@@ -263,7 +241,6 @@ jobs:
         --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
         --output vendor_boot.img
         echo "✅ Manual vendor_boot.img created! Size: $(du -h vendor_boot.img | cut -f1)"
-
         echo "=== Creating recovery.cpio.gz ==="  
         cp recovery_ramdisk.gz recovery.cpio.gz
         ls -la boot.img vendor_boot.img ramdisk.cpio recovery.cpio.gz dtb.img
@@ -295,18 +272,17 @@ jobs:
           **Build Type:** Modular Vendor Boot
           **Header Version:** v4
           **Ramdisk Compression:** gzip
-          
-          ## 📦 Included Files
+          ##Included Files
           - `boot.img` - TWRP boot image
           - `vendor_boot.img` - Complete vendor_boot partition
           - `recovery.cpio.gz` - Modular recovery ramdisk only
-          ## 🔧 Build Information
+          ##Build Information
           - Manifest: ${{ github.event.inputs.MANIFEST_URL }}
           - Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
           - Device Tree: ${{ github.event.inputs.DEVICE_TREE_URL }}
           - Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
           
-          ## ⚠️ Notes
+          ## Notes
           - This device uses boot header v4 with modular ramdisk support
           - Method 2 preserves stock vendor_boot vendor_ramdisk
       env:
