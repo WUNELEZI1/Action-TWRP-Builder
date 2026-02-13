@@ -260,7 +260,6 @@ jobs:
           --output vendor_boot.img
             echo "✅ Manual vendor_boot.img created!"
         echo "=== Creating recovery.cpio.gz ==="
-        cd out/target/product/$DEVICE/
         gzip -9 -c ramdisk.img > recovery.cpio.gz
         ls -la boot.img vendor_boot.img ramdisk.img recovery.cpio.gz
         cd ${{ steps.pwd.outputs.workspace-folder }}
