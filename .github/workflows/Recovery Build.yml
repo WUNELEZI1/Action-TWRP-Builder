@@ -240,28 +240,33 @@ jobs:
         DEVICE="${{ github.event.inputs.device_name }}"
 
         breakfast "twrp_${DEVICE}-eng"    
+    
         echo "=== Building boot.img ==="
         mka bootimage -j$(nproc --all)
-        echo "=== Building ramdisk.img ==="    
-        mka ramdisk -j$(nproc --all)
 
         echo "=== Building vendor_boot.img ==="
-            cd out/target/product/$DEVICE/
-            cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
+        cd out/target/product/$DEVICE/
+    
+        cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/prebuilt/recovery_ramdisk.gz .
+        gunzip -c recovery_ramdisk.gz > ramdisk.cpio
+    
+        cp ${{ steps.pwd.outputs.workspace-folder }}/device/zyb/$DEVICE/dtb/mt6768.dtb dtb.img
+    
         mkbootimg \
-          --header_version 4 \
-          --pagesize 4096 \
-          --dtb_offset 0x1c000000 \
-          --ramdisk_offset 0x4000000 \
-          --tags_offset 0x00000100 \
-          --dtb dtb.img \
-          --ramdisk ramdisk.img \
-          --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
-          --output vendor_boot.img
-            echo "✅ Manual vendor_boot.img created!"
-        echo "=== Creating recovery.cpio.gz ==="
-        gzip -9 -c ramdisk.img > recovery.cpio.gz
-        ls -la boot.img vendor_boot.img ramdisk.img recovery.cpio.gz
+        --header_version 4 \
+        --pagesize 4096 \
+        --dtb_offset 0x1c000000 \
+        --ramdisk_offset 0x4000000 \
+        --tags_offset 0x00000100 \
+        --dtb dtb.img \
+        --ramdisk ramdisk.cpio \
+        --cmdline "bootopt=64S3,32N2,64N2 buildvariant=user" \
+        --output vendor_boot.img
+        echo "✅ Manual vendor_boot.img created! Size: $(du -h vendor_boot.img | cut -f1)"
+
+        echo "=== Creating recovery.cpio.gz ==="  
+        cp recovery_ramdisk.gz recovery.cpio.gz
+        ls -la boot.img vendor_boot.img ramdisk.cpio recovery.cpio.gz dtb.img
         cd ${{ steps.pwd.outputs.workspace-folder }}
     - name: Upload recovery artifacts
       uses: actions/upload-artifact@v4
@@ -270,7 +275,6 @@ jobs:
         path: |
           ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/boot.img
           ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/vendor_boot.img
-          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/ramdisk.img
           ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.device_name }}/recovery.cpio.gz
           retention-days: 7
     - name: Upload to Release
